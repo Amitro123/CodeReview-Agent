@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "CodeReview Agent",
+  "version": "1.1",
+  "description": "AI-powered code analysis with DevTools integration.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "debugger",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "html2canvas.min.js",
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "Open CodeReview Agent"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

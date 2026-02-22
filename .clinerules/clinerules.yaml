@@ -1,0 +1,45 @@
+project: codereview-agent
+version: '2.0'
+generated_by: project-rules-generator
+tech_stack:
+- chrome
+- fastapi
+- gitpython
+- mcp
+- openai
+- perplexity
+- uvicorn
+- websocket
+project_type: python-cli
+skills:
+  builtin:
+  - skills/builtin/code-review.md
+  - skills/builtin/systematic-debugging.md
+  - skills/builtin/test-driven-development.md
+  learned:
+  - skills/learned/api-client-patterns.md
+  - skills/learned/rate-limiting.md
+  - skills/learned/response-parsing.md
+  - skills/learned/retry-error-handling.md
+  - skills/learned/async-patterns.md
+  - skills/learned/dependency-injection.md
+  - skills/learned/error-handling.md
+  - skills/learned/middleware-patterns.md
+  - skills/learned/pydantic-validation.md
+skills_count:
+  builtin: 3
+  learned: 9
+  total: 12
+context:
+  exclude:
+  - '**/*.pyc'
+  - '**/__pycache__/**'
+  - '**/.venv/**'
+  - '**/node_modules/**'
+  - '**/*-skills.md'
+  - '**/*-skills.json'
+  - '**/.clinerules*'
+  max_file_size: 50000
+  load_on_demand:
+  - tests/
+  - docs/
