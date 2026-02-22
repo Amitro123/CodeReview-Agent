@@ -75,7 +75,7 @@ You need to run both the Python backend and the Node.js screenshot service.
 **Terminal 1 (Backend):**
 ```bash
 # Clone & Install
-git clone https://github.com/USER/CodeReview-Agent.git
+git clone https://github.com/Amitro123/CodeReview-Agent.git
 pip install -r requirements.txt
 
 # Start Server
