@@ -42,14 +42,14 @@ class MultiAgentAnalyzer:
         
         # Parallel Execution: Frontend (Fast) + Backend (Fast)
         print("DEBUG: Running Frontend and Backend agents in parallel...", flush=True)
-        fe_task = self._agent("llama-3.1-8b-instant", fe_prompt) # Optimized model
-        be_task = self._agent("llama-3.1-8b-instant", be_prompt) # Optimized model
+        fe_task = self._agent("openai/gpt-oss-20b", fe_prompt) # Optimized model
+        be_task = self._agent("openai/gpt-oss-20b", be_prompt) # Optimized model
         
         fe_analysis, be_analysis = await asyncio.gather(fe_task, be_task)
 
         # Agent 3: SolutionIntegrator (High Quality)
         integration_prompt = f"Integrate the following Frontend and Backend analysis into a single, unified fix plan. Focus on the root cause and provide a clear PR title and specific file fixes.\n\nFrontend Analysis:\n{fe_analysis}\n\nBackend Analysis:\n{be_analysis}\n\nRepo: {repo}"
-        solution_plan = await self._agent("llama-3.3-70b-versatile", integration_prompt)
+        solution_plan = await self._agent("openai/gpt-oss-120b", integration_prompt)
         
         # Save MDs
         analysis_files = self._save_mds(fe_analysis, be_analysis, solution_plan, repo)

@@ -28,6 +28,12 @@ class Settings(BaseModel):
     perplexity: PerplexitySettings = Field(default_factory=PerplexitySettings)
     github: GitHubSettings = Field(default_factory=GitHubSettings)
     groq_api_key: str = Field(default=os.getenv("GROQ_API_KEY", "").strip('"'), description="Groq API Key")
+    # Must be a vision-capable Groq model. Check https://console.groq.com/docs/models
+    # for the current list - Groq renames/retires preview models periodically.
+    groq_vision_model: str = Field(
+        default=os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b").strip('"'),
+        description="Groq vision-capable model used to analyze screenshots",
+    )
 
     def validate_config(self):
         """Manually trigger validation for critical components."""
