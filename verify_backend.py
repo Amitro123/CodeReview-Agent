@@ -10,7 +10,8 @@ async def test_backend():
     payload = {
         "type": "universal_analyze",
         "query": "Fix this visual bug",
-        "screenshot": "data:image/png;base64,mockstub",
+        # 1x1 transparent PNG - just enough to be a valid image for the vision model
+        "screenshot": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
         "dom": {
             "url": "http://example.com",
             "selectedElement": {"tagName": "DIV"},

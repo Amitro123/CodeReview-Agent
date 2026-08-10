@@ -32,6 +32,22 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     }
 });
 
+// Captures exactly what the user sees in their logged-in tab (native Chrome
+// API) - unlike html2canvas (fails on iframes/CORS) or a headless browser
+// hitting the URL fresh (which would just see a login wall).
+function captureScreenshot(windowId) {
+    return new Promise((resolve) => {
+        chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
+            if (chrome.runtime.lastError) {
+                console.warn("captureVisibleTab failed:", chrome.runtime.lastError.message);
+                resolve(null);
+                return;
+            }
+            resolve(dataUrl || null);
+        });
+    });
+}
+
 function attachDebugger(tabId) {
     return new Promise((resolve, reject) => {
         chrome.debugger.attach({ tabId: tabId }, "1.3", () => {
@@ -140,7 +156,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         getSocket().then(s => {
             if (s && s.readyState === WebSocket.OPEN) {
                 chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-                    const tabId = tabs[0]?.id;
+                    const tab = tabs[0];
+                    const tabId = tab?.id;
+                    const screenshot = tab ? await captureScreenshot(tab.windowId) : null;
+
                     if (tabId) {
                         if (!tabErrors[tabId]) tabErrors[tabId] = { network: [], console: [] };
                         // Ensure debugger is attached and logs are flushed
@@ -154,7 +173,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             s.send(JSON.stringify({
                                 type: "universal_analyze",
                                 query: request.query,
-                                screenshot: request.screenshot,
+                                screenshot: screenshot,
                                 dom: request.dom,
                                 repo: request.repo,
                                 api_key: result.perplexityApiKey,
@@ -169,7 +188,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             s.send(JSON.stringify({
                                 type: "universal_analyze",
                                 query: request.query,
-                                screenshot: request.screenshot,
+                                screenshot: screenshot,
                                 dom: request.dom,
                                 repo: request.repo,
                                 api_key: result.perplexityApiKey,
@@ -191,15 +210,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         getSocket().then(s => {
             if (s && s.readyState === WebSocket.OPEN) {
                 console.log("Sending ci_analyze to backend...");
-                chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                    s.send(JSON.stringify({
-                        type: "ci_analyze",
-                        ci_log: request.ci_log,
-                        screenshot: request.screenshot,
-                        repo: request.repo,
-                        api_key: result.perplexityApiKey
-                    }));
-                    sendResponse({ status: "sent" });
+                chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+                    const tab = tabs[0];
+                    const screenshot = tab ? await captureScreenshot(tab.windowId) : null;
+                    chrome.storage.sync.get(['perplexityApiKey'], (result) => {
+                        s.send(JSON.stringify({
+                            type: "ci_analyze",
+                            ci_log: request.ci_log,
+                            screenshot: screenshot,
+                            repo: request.repo,
+                            api_key: result.perplexityApiKey
+                        }));
+                        sendResponse({ status: "sent" });
+                    });
                 });
             } else {
                 console.error("ci-analyze failed: Backend not connected");

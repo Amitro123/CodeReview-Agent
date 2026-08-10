@@ -14,7 +14,7 @@
 - 🔍 **Smart Analysis**: Leverage Perplexity's `sonar-huge` model for deep semantic code reviews.
 - ⚡ **Real-time Interaction**: Bi-directional streaming via WebSockets for zero-latency feedback.
 - 🏗️ **Autonomous Scrape**: Automatically navigate GitHub Actions, scrape logs, and identify root causes.
-- 📸 **High-Fidelity Screenshots**: Uses local Puppeteer service for pixel-perfect captures.
+- 📸 **Native Screenshots**: Captures exactly what you see in your logged-in tab via `chrome.tabs.captureVisibleTab`, analyzed directly by a Groq vision model.
 - 🛠️ **DevTools Integration**: Captures Network (4xx/5xx) and Console errors for deeper context.
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
 - 🛠️ **MCP Ready**: Built-in support for Model Context Protocol to connect with your local toolchain.
@@ -69,10 +69,7 @@ The agent is equipped with specialized skills to maintain this codebase:
 
 ## 💻 Getting Started
 
-### 1. Backend & Screenshot Service
-You need to run both the Python backend and the Node.js screenshot service.
-
-**Terminal 1 (Backend):**
+### 1. Backend
 ```bash
 # Clone & Install
 git clone https://github.com/Amitro123/CodeReview-Agent.git
@@ -81,16 +78,6 @@ pip install -r requirements.txt
 # Start Server
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-
-**Terminal 2 (Screenshot Service):**
-```bash
-# Install Dependencies
-npm install
-
-# Start Service
-node screenshot-server.js
-```
-*Listens on `http://localhost:3001`*
 
 ### 2. Extension Installation
 1. Go to `chrome://extensions/` and enable **Developer mode**.

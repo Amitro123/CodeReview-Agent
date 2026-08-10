@@ -10,18 +10,26 @@ class UniversalAgent:
         self.api_key = settings.groq_api_key
         self.client = Groq(api_key=self.api_key) if self.api_key else None
 
-    async def _agent(self, model: str, prompt: str):
+    async def _agent(self, model: str, prompt: str, image_data_url: str = None):
         if not self.client:
             print("DEBUG: UniversalAgent - Groq client not initialized.", flush=True)
             return "Error: Groq client not initialized."
-        
+
+        if image_data_url:
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ]
+        else:
+            content = prompt
+
         print(f"DEBUG: UniversalAgent - Calling {model}...", flush=True)
         loop = asyncio.get_event_loop()
         try:
             completion = await loop.run_in_executor(
                 None,
                 lambda: self.client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": content}],
                     model=model,
                 )
             )
@@ -31,50 +39,25 @@ class UniversalAgent:
             print(f"DEBUG: UniversalAgent - {model} failed: {str(e)}", flush=True)
             return f"Error: {str(e)}"
 
-    async def take_puppeteer_screenshot(self, url: str) -> str:
-        import aiohttp
-        print(f"DEBUG: Requesting Puppeteer screenshot for {url}")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post('http://localhost:3001/screenshot', json={'url': url}, timeout=45) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get('screenshot')
-                    else:
-                        print(f"Puppeteer error: {await resp.text()}")
-        except Exception as e:
-            print(f"Puppeteer screenshot failed: {e}")
-        return None
-
     async def visual_agent(self, screenshot: str, query: str, dom: Dict[str, Any], network_errors: list = [], console_errors: list = []):
-        # Try to get a better screenshot from Puppeteer if URL is available
-        url = dom.get("url")
-        if url:
-            pup_screenshot = await self.take_puppeteer_screenshot(url)
-            if pup_screenshot:
-                screenshot = pup_screenshot
-
+        # `screenshot` is captured by the extension itself via chrome.tabs.captureVisibleTab,
+        # i.e. exactly what the user's logged-in tab is showing right now.
         prompt = f"""
         User Query: "{query}"
         DOM Context: {json.dumps(dom, indent=2)}
         Network Errors (DevTools): {json.dumps(network_errors, indent=2)}
         Console Errors (DevTools): {json.dumps(console_errors, indent=2)}
-        Screenshot: [Base64 provided in context]
-        
-        Task: 
-        1. FIRST: Analyze the User Query to determine intent.
-           - If query mentions "error", "broken", "connection", "fail", "data", "loading": HIGH PRIORITY on Network/Console errors.
-           - If query mentions "style", "color", "move", "text", "UI": LOW PRIORITY on Network/Console errors (unless they block        Task: 
+
+        Task:
         1. FIRST: Analyze the User Query to determine intent.
            - If query mentions "error", "broken", "connection", "fail", "data", "loading": HIGH PRIORITY on Network/Console errors.
            - If query mentions "style", "color", "move", "text", "UI": LOW PRIORITY on Network/Console errors (unless they block the UI).
-        2. Analyze the Visual/DOM state based on that priority.
+        2. Analyze the attached screenshot together with the DOM state, based on that priority.
         3. IGNORE standard background noise (analytics, tracking) unless it's the specific root cause.
         4. ANSWER the User Query directly.
         """
-        # Note: In a real vision scenario, we'd send the image to a vision model.
-        # For this MVP, we analyze the DOM + HTML metadata provided.
-        return await self._agent("llama-3.3-70b-versatile", prompt)
+        model = settings.groq_vision_model if screenshot else "llama-3.3-70b-versatile"
+        return await self._agent(model, prompt, image_data_url=screenshot)
 
     async def code_agent(self, repo: str, ui_analysis: str, selected_element: Dict[str, Any]):
         prompt = f"""

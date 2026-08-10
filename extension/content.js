@@ -34,42 +34,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             url: window.location.href
         };
 
-        if (typeof html2canvas !== 'undefined') {
-            // Race html2canvas against a 3-second timeout
-            const screenshotPromise = html2canvas(document.body, {
-                useCORS: true,
-                logging: false,
-                ignoreElements: (element) => element.tagName === 'IFRAME' // Avoid cross-origin iframes
-            });
-
-            const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 3000));
-
-            Promise.race([screenshotPromise, timeoutPromise])
-                .then(canvas => {
-                    sendResponse({
-                        ci_logs: ci_logs,
-                        screenshot: canvas ? canvas.toDataURL() : null,
-                        dom: dom_context,
-                        repo: window.location.pathname.split('/').slice(1, 3).join('/')
-                    });
-                })
-                .catch(err => {
-                    console.error("Screenshot failed:", err);
-                    sendResponse({
-                        ci_logs: ci_logs,
-                        screenshot: null, // Fallback if screenshot dies
-                        dom: dom_context,
-                        repo: window.location.pathname.split('/').slice(1, 3).join('/')
-                    });
-                });
-        } else {
-            sendResponse({
-                ci_logs: ci_logs,
-                screenshot: null,
-                dom: dom_context,
-                repo: window.location.pathname.split('/').slice(1, 3).join('/')
-            });
-        }
-        return true;
+        // Screenshots are captured natively by the background service worker
+        // (chrome.tabs.captureVisibleTab), not here - see background.js.
+        sendResponse({
+            ci_logs: ci_logs,
+            dom: dom_context,
+            repo: window.location.pathname.split('/').slice(1, 3).join('/')
+        });
     }
 });

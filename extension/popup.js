@@ -151,7 +151,6 @@ function triggerUniversalAnalysis(query) {
                 chrome.runtime.sendMessage({
                     action: "universal-analyze",
                     query: query,
-                    screenshot: response.screenshot,
                     dom: response.dom,
                     repo: response.repo
                 });
@@ -179,7 +178,6 @@ function triggerCIAnalysis() {
                 chrome.runtime.sendMessage({
                     action: "ci-analyze",
                     ci_log: response.ci_logs,
-                    screenshot: response.screenshot,
                     repo: response.repo
                 });
                 showThinkingBubble('Multi-Agent Analysis started...');
