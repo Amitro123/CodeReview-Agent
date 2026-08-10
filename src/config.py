@@ -31,7 +31,7 @@ class Settings(BaseModel):
     # Must be a vision-capable Groq model. Check https://console.groq.com/docs/models
     # for the current list - Groq renames/retires preview models periodically.
     groq_vision_model: str = Field(
-        default=os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip('"'),
+        default=os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b").strip('"'),
         description="Groq vision-capable model used to analyze screenshots",
     )
 

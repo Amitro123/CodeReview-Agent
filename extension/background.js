@@ -210,19 +210,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         getSocket().then(s => {
             if (s && s.readyState === WebSocket.OPEN) {
                 console.log("Sending ci_analyze to backend...");
-                chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-                    const tab = tabs[0];
-                    const screenshot = tab ? await captureScreenshot(tab.windowId) : null;
-                    chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                        s.send(JSON.stringify({
-                            type: "ci_analyze",
-                            ci_log: request.ci_log,
-                            screenshot: screenshot,
-                            repo: request.repo,
-                            api_key: result.perplexityApiKey
-                        }));
-                        sendResponse({ status: "sent" });
-                    });
+                // No screenshot here: the backend's ci_analyze handler only
+                // reads ci_log/repo (text-only CI log analysis), so capturing
+                // one would just ship sensitive tab content for nothing.
+                chrome.storage.sync.get(['perplexityApiKey'], (result) => {
+                    s.send(JSON.stringify({
+                        type: "ci_analyze",
+                        ci_log: request.ci_log,
+                        repo: request.repo,
+                        api_key: result.perplexityApiKey
+                    }));
+                    sendResponse({ status: "sent" });
                 });
             } else {
                 console.error("ci-analyze failed: Backend not connected");

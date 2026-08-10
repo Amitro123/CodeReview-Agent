@@ -56,7 +56,7 @@ class UniversalAgent:
         3. IGNORE standard background noise (analytics, tracking) unless it's the specific root cause.
         4. ANSWER the User Query directly.
         """
-        model = settings.groq_vision_model if screenshot else "llama-3.3-70b-versatile"
+        model = settings.groq_vision_model if screenshot else "openai/gpt-oss-120b"
         return await self._agent(model, prompt, image_data_url=screenshot)
 
     async def code_agent(self, repo: str, ui_analysis: str, selected_element: Dict[str, Any]):
@@ -70,7 +70,7 @@ class UniversalAgent:
         2. Identify the React components, CSS classes, or Backend props involved.
         3. Propose code-level changes.
         """
-        return await self._agent("llama-3.1-8b-instant", prompt)
+        return await self._agent("openai/gpt-oss-20b", prompt)
 
     async def integrator(self, ui_analysis: str, code_analysis: str):
         prompt = f"""
@@ -85,7 +85,7 @@ class UniversalAgent:
         3. Provide a clear 'Root Cause' and 'Fix Checklist'.
         4. Output exactly what an IDE agent needs to do.
         """
-        return await self._agent("llama-3.3-70b-versatile", prompt)
+        return await self._agent("openai/gpt-oss-120b", prompt)
 
     def save_universal_mds(self, fix_plan: str, query: str, repo: str, network_errors: list = [], console_errors: list = [], screenshot: str = None):
         from src.config import find_repo_root
@@ -104,7 +104,9 @@ class UniversalAgent:
         md_content = f"# Universal Fix Plan\n\nQuery: {query}\n\n"
         
         if screenshot:
-            md_content += f"## Screenshot\n![Screenshot]({screenshot})\n\n"
+            # Don't persist the raw data URL: it's a capture of the user's
+            # authenticated tab and may contain sensitive page content.
+            md_content += "## Screenshot\nA screenshot of the page was captured and analyzed by the vision model (not saved to disk).\n\n"
             
         if network_errors:
             md_content += f"## DevTools Network Errors\n"
