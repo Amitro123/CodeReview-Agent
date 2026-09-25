@@ -1,6 +1,6 @@
 """MCP server exposing read-only repo tools (list/read/search files), sandboxed to one root directory.
 
-Run standalone as a subprocess over stdio - see repo_client.py for the client side.
+Run standalone as a subprocess over stdio - see src/agents/mcp_tools.py for the client side.
 The root directory is taken from the MCP_REPO_ROOT env var so the client controls
 exactly which directory this process is allowed to touch.
 """

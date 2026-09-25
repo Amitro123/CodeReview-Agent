@@ -224,15 +224,88 @@ function loadHistory() {
     }
 }
 
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Status element per run id, updated when the backend confirms the feedback was saved.
+const feedbackStatus = {};
+
+// 👍/👎 under a result. The verdict is what turns a run into knowledge: it's logged to
+// MISTAKES.md and the run is ingested into the project wiki. Not saved in chat history,
+// so a reopened panel can't send a second verdict for an old run.
+function addFeedbackControls(runRef) {
+    const box = document.createElement('div');
+    box.className = 'feedback';
+
+    const question = document.createElement('span');
+    question.textContent = 'Did this fix work?';
+
+    const note = document.createElement('input');
+    note.type = 'text';
+    note.className = 'feedback-note';
+    note.placeholder = "Optional: what was the actual cause?";
+
+    const status = document.createElement('span');
+    status.className = 'feedback-status';
+    feedbackStatus[runRef.run_id] = status;
+
+    const buttons = [];
+    const send = (worked) => {
+        buttons.forEach(b => { b.disabled = true; });
+        note.disabled = true;
+        status.textContent = 'Saving…';
+        chrome.runtime.sendMessage(
+            { action: "send_feedback", runRef, worked, note: note.value.trim() },
+            (response) => {
+                if (!response || response.status !== 'sent') {
+                    status.textContent = `Not saved: ${response?.message || 'backend not connected'}`;
+                    buttons.forEach(b => { b.disabled = false; });
+                    note.disabled = false;
+                }
+            }
+        );
+    };
+    for (const [label, worked] of [['👍 Worked', true], ["👎 Didn't work", false]]) {
+        const button = document.createElement('button');
+        button.className = 'feedback-btn';
+        button.textContent = label;
+        button.addEventListener('click', () => send(worked));
+        buttons.push(button);
+    }
+
+    box.append(question, ...buttons, note, status);
+    chatHistory.appendChild(box);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+}
+
 // Listen for incoming messages from background
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "analysis_result") {
         removeThinkingBubble();
         addHistoryItem('bot', "<b>[DONE] Analysis Complete!</b><br>Check your IDE for the fix plan.");
-        addHistoryItem('bot', request.text);
+        // The answer can echo text scraped from the analyzed page; never render it as HTML.
+        addHistoryItem('bot', escapeHtml(request.text));
+        if (request.runRef && request.runRef.run_id) {
+            addFeedbackControls(request.runRef);
+        }
     }
     if (request.action === "status_update") {
         showThinkingBubble(request.text);
+    }
+    if (request.action === "feedback_saved") {
+        const status = feedbackStatus[request.runId];
+        if (status) {
+            status.textContent = request.duplicate
+                ? 'Already recorded for this run.'
+                : 'Saved. The agent will learn from this.';
+        }
+    }
+    if (request.action === "backend_error") {
+        removeThinkingBubble();
+        addHistoryItem('bot', `Error: ${escapeHtml(request.text)}`);
     }
 });
 

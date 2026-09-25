@@ -81,7 +81,8 @@ async def ci_analyze(request: CIAnalyzeRequest):
     )
     # Trigger IDE
     await trigger_ide_agent(result["solution"])
-    return {"status": "analysis_complete", "fix_plan": result["solution"], "files": result["files"]}
+    return {"status": "analysis_complete", "fix_plan": result["solution"], "files": result["files"],
+            "run_id": result["run_id"]}
 
 @app.post("/local-diff")
 async def get_local_diff(path: str = ".", api_key: str = Header(None)):
@@ -97,6 +98,36 @@ async def get_local_diff(path: str = ".", api_key: str = Header(None)):
     }
 
 BROWSER_TOOL_TIMEOUT_SECONDS = 8.0
+
+_background_tasks: set = set()
+
+
+async def learn_in_background(kb, run_id: str) -> None:
+    """Ingests a run with a verdict into the project wiki (one LLM call) and regenerates
+    its graph."""
+    from src.agents.llm import LLM
+    from src.agents.universal_agent import TEXT_MODEL
+    from src.kb.cache import ResponseCache
+    try:
+        pages = await kb.ingest(run_id, LLM(ResponseCache()), TEXT_MODEL)
+        print(f"DEBUG: ingested run {run_id} into {len(pages)} wiki page(s): {pages}", flush=True)
+    except Exception as e:
+        print(f"WARNING: ingesting run {run_id} failed: {e}", flush=True)
+
+
+def handle_feedback(message: dict) -> dict:
+    """Records a 👍/👎 on a run and schedules the wiki update. Ingest costs an LLM call,
+    so it runs after the reply, off the request path."""
+    from src.kb.wiki import KnowledgeBase
+    run_ref = message.get("run_ref") or {}
+    kb = KnowledgeBase.for_project(run_ref.get("repo"), run_ref.get("page_url"))
+    run_id = run_ref.get("run_id", "")
+    if not kb.record_feedback(run_id, bool(message.get("worked")), message.get("note", "")):
+        return {"type": "feedback_saved", "run_id": run_id, "duplicate": True}
+    task = asyncio.create_task(learn_in_background(kb, run_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return {"type": "feedback_saved", "run_id": run_id, "mistakes_file": str(kb.mistakes_path)}
 
 
 async def request_browser_tool(websocket: WebSocket, pending: list, tool: str, args: dict) -> str:
@@ -146,6 +177,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
             if msg_type == "tool_result":
                 # A browser tool answer that arrived after its request timed out.
+                continue
+            if msg_type == "feedback":
+                try:
+                    await websocket.send_json(handle_feedback(message))
+                except (ValueError, OSError) as e:
+                    await websocket.send_json({"type": "error", "message": f"Feedback not saved: {e}"})
                 continue
 
             # API Key fallback logic
@@ -251,7 +288,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     # 3. Render, remember, save and trigger IDE (no LLM calls)
                     fix_plan = await analyzer.integrator(ui_analysis, code_analysis)
-                    analyzer.record_run(query, repo, page_url, code_analysis, network_errors, console_errors)
+                    run_id = analyzer.record_run(query, repo, page_url, code_analysis, network_errors, console_errors)
                     md_path = analyzer.save_universal_mds(fix_plan, query, repo, network_errors, console_errors, screenshot)
                     await trigger_ide_agent(fix_plan)
                     print(f"DEBUG: Universal Analysis done with {analyzer.llm.calls} LLM call(s)", flush=True)
@@ -259,7 +296,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "analysis_result",
                         "answer": f"Universal Fix Plan Ready!\n\nUser Query: {query}\n\nFiles saved: {md_path}\n\nPlan:\n{fix_plan}",
-                        "metadata": {"source": "groq_universal_agent", "llm_calls": analyzer.llm.calls}
+                        "metadata": {"source": "groq_universal_agent", "llm_calls": analyzer.llm.calls},
+                        "run_ref": {"run_id": run_id, "repo": repo, "page_url": page_url},
                     })
                 except Exception as e:
                     await websocket.send_json({"type": "error", "message": f"Universal Analysis error: {str(e)}"})
@@ -280,7 +318,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "analysis_result",
                         "answer": f"Multi-Agent CI Solution Plan created!\n\nFiles saved: {list(result['files'].values())}\n\nPlan Summary:\n{result['solution']}",
-                        "metadata": {"source": "groq_multi_agent"}
+                        "metadata": {"source": "groq_multi_agent", "llm_calls": analyzer.llm.calls},
+                        "run_ref": {"run_id": result["run_id"], "repo": repo, "page_url": None},
                     })
                 except Exception as e:
                     print(f"DEBUG: CI Analysis error: {str(e)}", flush=True)

@@ -19,8 +19,8 @@
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
 - 🛠️ **Real MCP Tool Use**: The code agent runs an actual MCP server (`src/repo_tools`), sandboxed to your repo, giving it `list_files`/`read_file`/`search_code` tools instead of guessing file names from a prompt.
 - 🔎 **Live Page Inspection**: The visual agent can call `inspect_element` on your open tab (computed styles, hidden/covered state, size) when the screenshot isn't enough.
-- 💸 **Few LLM Calls**: A page analysis is 2 calls plus one per tool turn (tool turns are capped: 2 for the visual agent, 4 for the code agent); the fix plan is written by the code agent, so there's no separate integration call. CI analysis is 1 call. Repeats are served from a SQLite cache, keyed on the repo's git state so code changes invalidate it.
-- 🧠 **Memory**: Every run is stored as a lesson (root cause, fix, files). Later analyses of the same project recall at most 2 short matching lessons, in the spirit of [agent-brain](https://github.com/Amitro1234/agent-brain-cursor).
+- 💸 **Few LLM Calls**: A page analysis is 2 calls plus one per tool turn (tool turns are capped: 2 for the visual agent, 4 for the code agent); the fix plan is written by the code agent, so there's no separate integration call. CI analysis is 1 call. Repeats are served from a file cache, keyed on the repo's git state and the knowledge base's state, so a code change or a new 👍/👎 invalidates it.
+- 🧠 **Knowledge Base**: Every analysis is recorded; your 👍/👎 on a fix goes to `MISTAKES.md` ([agent-brain](https://github.com/Amitro1234/agent-brain-cursor) format) and is ingested into a per-project wiki with a link graph (see [Knowledge base](#-knowledge-base)).
 
 ---
 
@@ -89,12 +89,50 @@ Keys are a GitHub `owner/repo` or the host of the page you analyze:
 REPO_PATHS=Amitro123/DevLens-AI=/path/to/DevLens-AI,localhost:3000=/path/to/my-app
 ```
 
-The cache and memory live in `~/.codereview-agent/brain.db` (`AGENT_DB_PATH`); set `LLM_CACHE_TTL_HOURS=0` to disable caching.
+The LLM cache lives in `~/.codereview-agent/cache` (`LLM_CACHE_DIR`); set `LLM_CACHE_TTL_HOURS=0` to disable it.
 
 ### 2. Extension Installation
 1. Go to `chrome://extensions/` and enable **Developer mode**.
 2. Click **Load unpacked** and select the `/extension` folder.
 3. Configure your **Perplexity API Key** in the extension settings.
+
+---
+
+## 🧠 Knowledge base
+
+Each project gets a knowledge base that grows from verified runs, following Karpathy's
+[LLM wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) pattern:
+
+```
+<project>/.codereview-kb/        (or KB_DIR/<project> when the project isn't mapped)
+  raw/                           every analysis run + your verdict on it (immutable)
+  wiki/components/ issues/ practices/   pages the agent maintains (frontmatter + markdown)
+  wiki/index.md  wiki/log.md  wiki/_template.md
+  graph/knowledge-graph.json     nodes = pages, edges = related_pages (generated, no LLM)
+  MISTAKES.md                    agent-brain inbox (or the project's own, if agent-brain is set up there)
+```
+
+The cycle:
+1. **Record** (no LLM): every analysis is saved to `raw/` and shown with 👍/👎 buttons.
+2. **Verify**: your verdict (plus an optional note on the actual cause) is appended to `MISTAKES.md` in agent-brain format.
+3. **Ingest** (1 LLM call, in the background): the run is folded into wiki pages - including "what didn't work" - and the graph is regenerated. Unverified runs are never ingested.
+4. **Recall** (no LLM): the next analysis gets a compact map of the wiki plus the best-matching page, and the code agent can call `query_kb` / `get_page` on the KB MCP server for more.
+
+Maintenance, no LLM calls:
+
+```bash
+python -m src.kb.cli graph /path/to/project/.codereview-kb
+python -m src.kb.cli lint  /path/to/project/.codereview-kb --repo /path/to/project
+```
+
+To give Claude Code or Cursor the same knowledge, register the KB server in the project's `.mcp.json`:
+
+```json
+{"mcpServers": {"codereview-kb": {
+  "command": "python3",
+  "args": ["/path/to/CodeReview-Agent/src/kb/kb_server.py"],
+  "env": {"MCP_KB_ROOT": "/path/to/project/.codereview-kb"}}}}
+```
 
 ---
 

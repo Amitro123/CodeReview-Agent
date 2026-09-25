@@ -1,5 +1,5 @@
 """Groq chat calls shared by the agents: one-shot and tool-calling, both backed by the
-Brain's response cache, with a call counter so the cost of a run is visible."""
+response cache, with a call counter so the cost of a run is visible."""
 import asyncio
 import hashlib
 import json
@@ -8,14 +8,14 @@ from typing import Any, Awaitable, Callable, Optional
 from groq import Groq
 
 from src.config import settings
-from src.memory.brain import Brain
+from src.kb.cache import ResponseCache
 
 ToolExecutor = Callable[[str, dict], Awaitable[str]]
 
 
 class LLM:
-    def __init__(self, brain: Brain, client: Any = None):
-        self.brain = brain
+    def __init__(self, cache: ResponseCache, client: Any = None):
+        self.cache = cache
         if client is None and settings.groq_api_key:
             client = Groq(api_key=settings.groq_api_key)
         self.client = client
@@ -30,12 +30,12 @@ class LLM:
     def _key(self, model: str, messages: Any, extra: tuple) -> str:
         # Screenshots are large data URLs; key on their hash rather than the raw bytes.
         serialized = json.dumps(messages, sort_keys=True, default=str)
-        return self.brain.cache_key(model, hashlib.sha256(serialized.encode()).hexdigest(), *extra)
+        return self.cache.key(model, hashlib.sha256(serialized.encode()).hexdigest(), *extra)
 
     async def ask(self, model: str, prompt: str, image_data_url: Optional[str] = None,
                   json_mode: bool = False, cache: bool = True, cache_on: Any = None) -> str:
         """One-shot call. `cache_on` keys the cache on something other than the full prompt -
-        e.g. the prompt without recalled lessons, which change as the brain grows."""
+        e.g. the prompt without recalled knowledge, which changes as the knowledge base grows."""
         if not self.client:
             return "Error: Groq client not initialized."
         content: Any = prompt
@@ -48,7 +48,7 @@ class LLM:
         key = None
         if cache:
             key = self._key(model, (cache_on, image_data_url) if cache_on is not None else messages, ("ask", json_mode))
-        if key and (hit := self.brain.cache_get(key)) is not None:
+        if key and (hit := self.cache.get(key)) is not None:
             print(f"DEBUG: LLM cache hit ({model})", flush=True)
             return hit
 
@@ -62,7 +62,7 @@ class LLM:
             return f"Error: {e}"
         answer = completion.choices[0].message.content or ""
         if key:
-            self.brain.cache_set(key, answer)
+            self.cache.set(key, answer)
         return answer
 
     def _tool_key(self, model: str, messages: list, cache_extra: tuple, cache_on: Any) -> str:
@@ -70,7 +70,7 @@ class LLM:
 
     def cached_tool_answer(self, model: str, messages: list, cache_extra: tuple, cache_on: Any = None) -> Optional[str]:
         """Cached final answer for a tool loop, so callers can skip setting up tools entirely."""
-        hit = self.brain.cache_get(self._tool_key(model, messages, cache_extra, cache_on))
+        hit = self.cache.get(self._tool_key(model, messages, cache_extra, cache_on))
         if hit is not None:
             print(f"DEBUG: LLM cache hit ({model}, tool loop skipped)", flush=True)
         return hit
@@ -120,7 +120,7 @@ class LLM:
             return f"Error: {e}"
 
         if key:
-            self.brain.cache_set(key, answer)
+            self.cache.set(key, answer)
         return answer
 
     @staticmethod

@@ -1,7 +1,8 @@
 from typing import Any, Optional
 
 from src.agents.llm import LLM
-from src.memory.brain import Brain
+from src.kb.cache import ResponseCache
+from src.kb.wiki import KnowledgeBase
 
 CI_MODEL = "openai/gpt-oss-120b"
 # CI failures are almost always at the end of the log; keep the tail to bound tokens.
@@ -28,25 +29,25 @@ class MultiAgentAnalyzer:
     then an integrator); one call with a structured response covers all three sections.
     """
 
-    def __init__(self, brain: Optional[Brain] = None, client: Any = None):
-        self.brain = brain or Brain()
-        self.llm = LLM(self.brain, client)
+    def __init__(self, cache: Optional[ResponseCache] = None, client: Any = None):
+        self.llm = LLM(cache or ResponseCache(), client)
 
     async def analyze_ci_failure(self, ci_log: str, repo: str):
         ci_log = ci_log or ""
         log_tail = ci_log[-MAX_LOG_CHARS:]
         truncated_note = f"(showing the last {MAX_LOG_CHARS} of {len(ci_log)} characters)\n" if len(ci_log) > MAX_LOG_CHARS else ""
-        lessons = self.brain.recall(repo, log_tail[-2000:])
-        lessons_block = (
-            "Notes from past CI analyses of this repo (verify before relying on them):\n" + Brain.format_lessons(lessons)
-            if lessons else ""
+        kb = KnowledgeBase.for_project(repo)
+        knowledge = kb.recall(log_tail[-2000:])
+        knowledge_block = (
+            "What this repo's wiki knows from past runs whose fixes the user verified. A claim may be "
+            "outdated - verify it before relying on it:\n" + knowledge
+            if knowledge else ""
         )
-        def build_prompt(lessons_text: str) -> str:
-            return f"""
+        prompt = f"""
         {CI_JSON_CONTRACT}
 
         Repo: {repo}
-        {lessons_text}
+        {knowledge_block}
 
         Analyze this CI failure log. Identify frontend/UI issues and backend/API/DB issues separately,
         then give one unified fix plan focused on the root cause, with a clear PR title.
@@ -57,9 +58,9 @@ class MultiAgentAnalyzer:
         </ci_log>
         """
 
-        # Cache on the lesson-free prompt: this run's own recorded lesson would otherwise
-        # change the prompt and turn every re-analysis of the same log into a cache miss.
-        raw = await self.llm.ask(CI_MODEL, build_prompt(lessons_block), json_mode=True, cache_on=build_prompt(""))
+        # kb.fingerprint() moves on every verdict and ingest, so re-analyzing the same log after
+        # a 👎 gets a fresh answer instead of the cached wrong one.
+        raw = await self.llm.ask(CI_MODEL, prompt, json_mode=True, cache_on=(prompt, kb.fingerprint()))
         result = LLM.parse_json(raw)
 
         if result.get("parse_error"):
@@ -69,19 +70,10 @@ class MultiAgentAnalyzer:
             fe = result.get("frontend_findings", "")
             be = result.get("backend_findings", "")
             solution = self._render_solution(result)
-            self.brain.record_run(
-                kind="ci",
-                repo=repo,
-                query="CI failure",
-                error_sig=log_tail[-500:],
-                root_cause=result.get("root_cause", ""),
-                fix_checklist=result.get("fix_checklist", []),
-                files=result.get("files", []),
-                confidence=result.get("confidence", "low"),
-            )
 
+        run_id = kb.record_run("ci", "CI failure", result, error_signature=log_tail[-500:])
         analysis_files = self._save_mds(fe, be, solution, repo)
-        return {"solution": solution, "files": analysis_files}
+        return {"solution": solution, "files": analysis_files, "run_id": run_id}
 
     @staticmethod
     def _render_solution(result: dict) -> str:
