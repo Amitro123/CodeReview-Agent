@@ -17,7 +17,7 @@
 - 📸 **Native Screenshots**: Captures exactly what you see in your logged-in tab via `chrome.tabs.captureVisibleTab`, analyzed directly by a Groq vision model.
 - 🛠️ **DevTools Integration**: Captures Network (4xx/5xx) and Console errors for deeper context.
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
-- 🛠️ **MCP Ready**: Built-in support for Model Context Protocol to connect with your local toolchain.
+- 🛠️ **Real MCP Tool Use**: The code agent runs an actual MCP server (`src/repo_tools`), sandboxed to your repo, giving it `list_files`/`read_file`/`search_code` tools instead of guessing file names from a prompt.
 
 ---
 

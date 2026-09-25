@@ -53,6 +53,61 @@ class UniversalAgent:
             print(f"DEBUG: UniversalAgent - {model} failed: {str(e)}", flush=True)
             return f"Error: {str(e)}"
 
+    async def _agent_with_tools(self, model: str, messages: list, tools: list, tool_executor, max_iterations: int = 4) -> str:
+        """Runs a bounded tool-calling loop: the model may call tools (an async (name, args) -> str
+        callable) across several turns before giving its final answer. `messages` is mutated in place."""
+        if not self.client:
+            print("DEBUG: UniversalAgent - Groq client not initialized.", flush=True)
+            return "Error: Groq client not initialized."
+
+        loop = asyncio.get_event_loop()
+        for iteration in range(max_iterations):
+            try:
+                completion = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.chat.completions.create(
+                        messages=messages, model=model, tools=tools, tool_choice="auto"
+                    )
+                )
+            except Exception as e:
+                print(f"DEBUG: UniversalAgent - {model} failed: {str(e)}", flush=True)
+                return f"Error: {str(e)}"
+
+            message = completion.choices[0].message
+            tool_calls = getattr(message, "tool_calls", None)
+            if not tool_calls:
+                return message.content or ""
+
+            print(f"DEBUG: UniversalAgent - {model} requested {len(tool_calls)} tool call(s) (iteration {iteration + 1})", flush=True)
+            messages.append({
+                "role": "assistant",
+                "content": message.content,
+                "tool_calls": [tc.model_dump() for tc in tool_calls],
+            })
+            for tc in tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                try:
+                    result_text = await tool_executor(tc.function.name, args)
+                except Exception as e:
+                    result_text = f"Error calling {tc.function.name}: {e}"
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
+
+        # Ran out of iterations without a final answer - ask once more, tools disabled, to force one.
+        try:
+            completion = await loop.run_in_executor(
+                None,
+                lambda: self.client.chat.completions.create(
+                    messages=messages, model=model, response_format={"type": "json_object"}
+                )
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            print(f"DEBUG: UniversalAgent - {model} final-answer call failed: {str(e)}", flush=True)
+            return f"Error: {str(e)}"
+
     def _parse_json_response(self, raw: str) -> Dict[str, Any]:
         """Parses an agent's JSON reply, tolerating a model that ignores json_mode or errors out."""
         try:
@@ -113,12 +168,29 @@ class UniversalAgent:
         {json.dumps(ui_analysis, indent=2)}
 
         Task:
-        1. Map the visual agent's findings - and especially its open_questions, if any - to specific source files in the repository.
-        2. Identify the React components, CSS classes, or Backend props involved.
-        3. Propose code-level changes as findings.
-        4. If you can answer one of the visual agent's open_questions, say so explicitly in your findings.
+        1. Use the list_files/read_file/search_code tools to find the actual source files involved -
+           do not guess file or component names without checking.
+        2. Map the visual agent's findings - and especially its open_questions, if any - to those real files.
+        3. Identify the actual React components, CSS classes, or backend code involved, citing real file paths.
+        4. Propose code-level changes as findings.
+        5. If you can answer one of the visual agent's open_questions, say so explicitly in your findings.
+        6. Once you have enough information, stop calling tools and respond with the final JSON.
         """
-        raw = await self._agent("openai/gpt-oss-20b", prompt, json_mode=True)
+        model = "openai/gpt-oss-20b"
+        try:
+            from src.config import find_repo_root
+            from src.repo_tools.repo_client import RepoToolsClient
+
+            repo_root = find_repo_root(repo)
+            async with RepoToolsClient(str(repo_root)) as tools_client:
+                tools = await tools_client.get_groq_tools()
+                messages = [{"role": "user", "content": prompt}]
+                raw = await self._agent_with_tools(model, messages, tools, tools_client.call_tool)
+        except Exception as e:
+            # Repo tools unavailable (e.g. repo root doesn't exist, MCP server failed to start) -
+            # fall back to prompt-only analysis rather than failing the whole pipeline.
+            print(f"DEBUG: code_agent - repo tools unavailable ({e}), falling back to prompt-only analysis", flush=True)
+            raw = await self._agent(model, prompt, json_mode=True)
         return self._parse_json_response(raw)
 
     async def integrator(self, ui_analysis: Dict[str, Any], code_analysis: Dict[str, Any]) -> str:
