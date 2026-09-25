@@ -7,10 +7,7 @@ const universalChatInput = document.getElementById('universalChatInput');
 const sendBtn = document.getElementById('sendBtn');
 
 // Settings Inputs
-const apiKeyInput = document.getElementById('apiKey');
 const backendUrlInput = document.getElementById('backendUrlInput');
-const watchedReposInput = document.getElementById('watchedReposInput');
-const voiceModeCheckbox = document.getElementById('voiceMode');
 
 // Toggles/Pills
 const settingsToggleBtn = document.getElementById('settingsToggleBtn');
@@ -81,19 +78,13 @@ function setActivePill(type) {
 }
 
 function loadSettings() {
-    chrome.storage.sync.get(['perplexityApiKey', 'watchedRepos', 'voiceMode', 'backend_url'], (result) => {
-        apiKeyInput.value = result.perplexityApiKey || '';
+    chrome.storage.sync.get(['backend_url'], (result) => {
         backendUrlInput.value = result.backend_url || 'ws://localhost:8000';
-        voiceModeCheckbox.checked = result.voiceMode || false;
-        watchedReposInput.value = result.watchedRepos || '';
     });
 }
 
 function saveSettings() {
     const config = {
-        perplexityApiKey: apiKeyInput.value.trim(),
-        watchedRepos: watchedReposInput.value.trim(),
-        voiceMode: voiceModeCheckbox.checked,
         backend_url: backendUrlInput.value.trim()
     };
 

@@ -312,48 +312,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
-    if (request.action === "analyze_url") {
-        getSocket().then(s => {
-            if (s && s.readyState === WebSocket.OPEN) {
-                chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                    s.send(JSON.stringify({
-                        type: "analyze_url",
-                        url: request.url,
-                        api_key: result.perplexityApiKey
-                    }));
-                    sendResponse({ status: "sent" });
-                });
-            } else {
-                sendResponse({ status: "error", message: "Backend not connected (Socket offline)" });
-            }
-        });
-        return true;
-    } else if (request.action === "get_status") {
+    if (request.action === "get_status") {
         sendResponse({ status: currentStatus });
         return false;
-    } else if (request.action === "scrape_github_actions") {
-        chrome.scripting.executeScript({
-            target: { tabId: sender.tab.id },
-            func: () => {
-                const logs = document.querySelector('.log-viewer-container')?.innerText ||
-                    document.querySelector('.highlight.actions-log')?.innerText ||
-                    "No logs found in typical GitHub Actions containers.";
-                return logs;
-            }
-        }).then((results) => {
-            const logs = results[0].result;
-            getSocket().then(s => {
-                if (s && s.readyState === WebSocket.OPEN) {
-                    chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                        s.send(JSON.stringify({
-                            type: "analyze_logs",
-                            logs: logs,
-                            api_key: result.perplexityApiKey
-                        }));
-                    });
-                }
-            });
-        });
-        return true;
     }
 });

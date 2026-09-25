@@ -28,7 +28,7 @@ If you have made code changes or I have just fixed a bug in the extension:
 1.  **Open the Popup**: Click the CodeReview Agent icon in your browser toolbar.
 2.  **Settings Tab**:
     - Ensure **Backend URL** is `ws://localhost:8000`.
-    - The agents use the LLM key from the backend's `.env` (`OPENROUTER_API_KEY` by default), not this panel. The **Perplexity API Key** field is optional and only used by the older URL/log analysis actions.
+    - The agents use the LLM key from the backend's `.env` (`OPENROUTER_API_KEY` by default); the extension holds no keys.
     - Click **Save Settings**. (This establishes the WebSocket connection).
 3.  **Main Tab**:
     - **Ask about any page**: type what's wrong in the chat box (e.g. *"the orders list shows an error"*) and press Enter.

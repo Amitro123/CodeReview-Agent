@@ -296,10 +296,6 @@ class KnowledgeBase:
             lines.append("")
         self.index_path.write_text("\n".join(lines), encoding="utf-8")
 
-    @property
-    def has_pages(self) -> bool:
-        return bool(load_graph(self.graph_path)["nodes"])
-
     def recall(self, text: str) -> str:
         """Prompt block: a compact map of the wiki (most relevant pages first) plus the full
         best-matching page, capped. No LLM call; "" when the wiki is empty."""
