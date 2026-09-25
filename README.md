@@ -14,7 +14,7 @@
 - 🔍 **Smart Analysis**: Leverage Perplexity's `sonar-huge` model for deep semantic code reviews.
 - ⚡ **Real-time Interaction**: Bi-directional streaming via WebSockets for zero-latency feedback.
 - 🏗️ **Autonomous Scrape**: Automatically navigate GitHub Actions, scrape logs, and identify root causes.
-- 📸 **Native Screenshots**: Captures exactly what you see in your logged-in tab via `chrome.tabs.captureVisibleTab`, analyzed directly by a Groq vision model.
+- 📸 **Native Screenshots**: Captures exactly what you see in your logged-in tab via `chrome.tabs.captureVisibleTab`, analyzed directly by a vision model.
 - 🛠️ **DevTools Integration**: Captures Network (4xx/5xx) and Console errors for deeper context.
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
 - 🛠️ **Real MCP Tool Use**: The code agent runs an actual MCP server (`src/repo_tools`), sandboxed to your repo, giving it `list_files`/`read_file`/`search_code` tools instead of guessing file names from a prompt.
@@ -81,6 +81,14 @@ pip install -r requirements.txt
 
 # Start Server
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Set your LLM key in `.env`. [OpenRouter](https://openrouter.ai) is the default, so one key gives you any model;
+Groq and any OpenAI-compatible server (e.g. Ollama) work too - see `.env.example`:
+
+```bash
+OPENROUTER_API_KEY=sk-or-...
+LLM_MODEL=google/gemini-2.5-flash   # optional; or VISION_MODEL / CODE_MODEL / TEXT_MODEL separately
 ```
 
 To let the code agent read your code, map projects to local checkouts in `.env` (see `.env.example`).

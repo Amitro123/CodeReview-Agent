@@ -23,22 +23,76 @@ class GitHubSettings(BaseModel):
     token: str = Field(default=os.getenv("GITHUB_TOKEN", ""), description="GitHub Personal Access Token")
     watched_repos: list[str] = Field(default_factory=list, description="List of repositories to watch")
 
+def _env(name: str) -> str:
+    return os.getenv(name, "").strip().strip('"')
+
+
+# Every provider speaks the OpenAI chat-completions API, so one client covers them all.
+# (base_url, api-key env var, default models). Check the provider's model list before
+# changing defaults - model ids get renamed and retired.
+LLM_PROVIDERS = {
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY",
+                   {"vision": "google/gemini-2.5-flash", "code": "google/gemini-2.5-flash",
+                    "text": "google/gemini-2.5-flash"}),
+    "groq": ("https://api.groq.com/openai/v1", "GROQ_API_KEY",
+             {"vision": "qwen/qwen3.6-27b", "code": "openai/gpt-oss-20b", "text": "openai/gpt-oss-120b"}),
+    # Any other OpenAI-compatible server (Ollama, LM Studio, vLLM...): set LLM_BASE_URL and LLM_MODEL.
+    "custom": ("", "LLM_API_KEY", {}),
+}
+
+
+class LLMSettings(BaseModel):
+    provider: str
+    base_url: str
+    api_key: str
+    vision_model: str   # must accept images
+    code_model: str     # must support tool calling
+    text_model: str
+
+
+def load_llm_settings() -> LLMSettings:
+    """LLM_PROVIDER picks the provider; without it, OpenRouter unless only GROQ_API_KEY is
+    set. Models: VISION_MODEL / CODE_MODEL / TEXT_MODEL, else LLM_MODEL for all three, else
+    the provider's defaults."""
+    provider = _env("LLM_PROVIDER").lower()
+    if not provider:
+        provider = "groq" if _env("GROQ_API_KEY") and not _env("OPENROUTER_API_KEY") else "openrouter"
+    if provider not in LLM_PROVIDERS:
+        raise ValueError(f"LLM_PROVIDER must be one of {', '.join(LLM_PROVIDERS)}, not {provider!r}")
+    base_url, key_env, defaults = LLM_PROVIDERS[provider]
+    base_url = _env("LLM_BASE_URL") or base_url
+    if not base_url:
+        raise ValueError("LLM_PROVIDER=custom needs LLM_BASE_URL (e.g. http://localhost:11434/v1 for Ollama)")
+
+    def model(role: str, legacy: str = "") -> str:
+        chosen = _env(f"{role.upper()}_MODEL") or (_env(legacy) if legacy and provider == "groq" else "")
+        chosen = chosen or _env("LLM_MODEL") or defaults.get(role, "")
+        if not chosen:
+            raise ValueError(f"set {role.upper()}_MODEL or LLM_MODEL for LLM_PROVIDER={provider}")
+        return chosen
+
+    return LLMSettings(
+        provider=provider,
+        base_url=base_url,
+        api_key=_env(key_env),
+        vision_model=model("vision", legacy="GROQ_VISION_MODEL"),
+        code_model=model("code"),
+        text_model=model("text"),
+    )
+
+
 class Settings(BaseModel):
     """Global application settings."""
     perplexity: PerplexitySettings = Field(default_factory=PerplexitySettings)
     github: GitHubSettings = Field(default_factory=GitHubSettings)
-    groq_api_key: str = Field(default=os.getenv("GROQ_API_KEY", "").strip('"'), description="Groq API Key")
-    # Must be a vision-capable Groq model. Check https://console.groq.com/docs/models
-    # for the current list - Groq renames/retires preview models periodically.
-    groq_vision_model: str = Field(
-        default=os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b").strip('"'),
-        description="Groq vision-capable model used to analyze screenshots",
-    )
+    llm: LLMSettings = Field(default_factory=load_llm_settings)
 
     def validate_config(self):
-        """Manually trigger validation for critical components."""
-        if not self.perplexity.api_key:
-            raise ValueError("PERPLEXITY_API_KEY must be set in environment")
+        """Warns about missing keys instead of refusing to start: each feature reports its own
+        missing key when used, and the Perplexity-only endpoints shouldn't block the agents."""
+        if not self.llm.api_key and self.llm.provider != "custom":
+            print(f"WARNING: no API key for LLM provider '{self.llm.provider}' "
+                  f"(set {LLM_PROVIDERS[self.llm.provider][1]}); analyses will fail until it is set.", flush=True)
         return True
 
 from pathlib import Path

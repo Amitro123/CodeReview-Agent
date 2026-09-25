@@ -106,10 +106,9 @@ async def learn_in_background(kb, run_id: str) -> None:
     """Ingests a run with a verdict into the project wiki (one LLM call) and regenerates
     its graph."""
     from src.agents.llm import LLM
-    from src.agents.universal_agent import TEXT_MODEL
     from src.kb.cache import ResponseCache
     try:
-        pages = await kb.ingest(run_id, LLM(ResponseCache()), TEXT_MODEL)
+        pages = await kb.ingest(run_id, LLM(ResponseCache()), settings.llm.text_model)
         print(f"DEBUG: ingested run {run_id} into {len(pages)} wiki page(s): {pages}", flush=True)
     except Exception as e:
         print(f"WARNING: ingesting run {run_id} failed: {e}", flush=True)
@@ -332,7 +331,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "analysis_result",
                         "answer": f"Universal Fix Plan Ready!\n\nUser Query: {query}\n\nFiles saved: {md_path}\n\nPlan:\n{fix_plan}",
-                        "metadata": {"source": "groq_universal_agent", "llm_calls": analyzer.llm.calls},
+                        "metadata": {"source": "universal_agent", "llm_calls": analyzer.llm.calls,
+                                     "provider": settings.llm.provider},
                         "run_ref": {"run_id": run_id, "repo": repo, "page_url": page_url},
                     })
                 except Exception as e:
@@ -354,7 +354,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "analysis_result",
                         "answer": f"Multi-Agent CI Solution Plan created!\n\nFiles saved: {list(result['files'].values())}\n\nPlan Summary:\n{result['solution']}",
-                        "metadata": {"source": "groq_multi_agent", "llm_calls": analyzer.llm.calls},
+                        "metadata": {"source": "ci_agent", "llm_calls": analyzer.llm.calls,
+                                     "provider": settings.llm.provider},
                         "run_ref": {"run_id": result["run_id"], "repo": repo, "page_url": None},
                     })
                 except Exception as e:

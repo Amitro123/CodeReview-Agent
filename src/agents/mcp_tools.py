@@ -1,4 +1,4 @@
-"""Spawns MCP servers over stdio and exposes their tools to one Groq tool-calling loop."""
+"""Spawns MCP servers over stdio and exposes their tools to one LLM tool-calling loop."""
 import sys
 from contextlib import AsyncExitStack
 from pathlib import Path

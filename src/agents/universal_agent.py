@@ -8,8 +8,6 @@ from src.kb.cache import ResponseCache, repo_fingerprint
 from src.kb.wiki import KnowledgeBase, error_signature
 from src.verify import CHECKS_CONTRACT_HELP, describe, normalize_checks
 
-CODE_MODEL = "openai/gpt-oss-20b"
-TEXT_MODEL = "openai/gpt-oss-120b"
 VISUAL_TOOL_TURNS = 2
 CODE_TOOL_TURNS = 4
 
@@ -122,7 +120,7 @@ class UniversalAgent:
         4. If you can't determine something (e.g. which component/file is involved), put it in open_questions instead of guessing - the code agent may be able to resolve it.
         {tool_instruction}
         """
-        model = settings.groq_vision_model if screenshot else TEXT_MODEL
+        model = settings.llm.vision_model if screenshot else settings.llm.text_model
 
         raw = None
         if browser_tool:
@@ -231,7 +229,7 @@ class UniversalAgent:
         if servers or local_tools:
             messages = [{"role": "user", "content": prompt}]
             if cache_extra:
-                raw = self.llm.cached_tool_answer(CODE_MODEL, messages, cache_extra)
+                raw = self.llm.cached_tool_answer(settings.llm.code_model, messages, cache_extra)
             if raw is None:
                 try:
                     async with ToolBox(servers) as toolbox:
@@ -242,14 +240,14 @@ class UniversalAgent:
 
                         tools = toolbox.tools + [spec for spec, _ in local_tools.values()]
                         raw = await self.llm.ask_with_tools(
-                            CODE_MODEL, messages, tools, call_tool, CODE_TOOL_TURNS, cache_extra,
+                            settings.llm.code_model, messages, tools, call_tool, CODE_TOOL_TURNS, cache_extra,
                         )
                 except Exception as e:
                     # MCP servers unavailable (e.g. failed to start) - fall back to prompt-only
                     # analysis rather than failing the whole pipeline.
                     print(f"DEBUG: code_agent - tools unavailable ({e}), falling back to prompt-only", flush=True)
         if raw is None or raw.startswith("Error:"):
-            raw = await self.llm.ask(CODE_MODEL, prompt, json_mode=True, cache_on=(prompt, kb_state))
+            raw = await self.llm.ask(settings.llm.code_model, prompt, json_mode=True, cache_on=(prompt, kb_state))
         result = LLM.parse_json(raw)
         result["verification_checks"] = normalize_checks(result.get("verification_checks"))
         return result
