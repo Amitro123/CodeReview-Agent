@@ -179,7 +179,9 @@ class UniversalAgent:
                 "file or component names without checking. Prefer search_code over reading whole files. Error "
                 "texts and URLs rarely appear verbatim in the code: when a search finds nothing, search for a "
                 "shorter term (e.g. the resource name in a failing URL, like 'orders' for /api/orders) or use "
-                "list_files, and read the handler before concluding."
+                "list_files, and read the handler before concluding. Then follow the data: open the modules the "
+                "handler imports or calls (data access, models, seed/config data) - the failing input often comes "
+                "from there - and check every claim in root_cause against code you actually read."
             )
         elif use("repo"):
             instructions.append(
