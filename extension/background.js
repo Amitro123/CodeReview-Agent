@@ -122,7 +122,14 @@ function initSocket(url) {
             const data = JSON.parse(event.data);
             if (data.type === 'analysis_result') {
                 currentStatus = null; // Clear status on completion
-                chrome.runtime.sendMessage({ action: "analysis_result", text: data.answer });
+                chrome.runtime.sendMessage({ action: "analysis_result", text: data.answer, runRef: data.run_ref || null });
+            }
+            if (data.type === 'feedback_saved') {
+                chrome.runtime.sendMessage({ action: "feedback_saved", runId: data.run_id, duplicate: !!data.duplicate });
+            }
+            if (data.type === 'error') {
+                currentStatus = null;
+                chrome.runtime.sendMessage({ action: "backend_error", text: data.message });
             }
             if (data.type === 'status') {
                 currentStatus = data.message; // Update current status
@@ -172,6 +179,22 @@ setInterval(async () => {
 connect(); // Initial connection
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "send_feedback") {
+        getSocket().then(s => {
+            if (s && s.readyState === WebSocket.OPEN) {
+                s.send(JSON.stringify({
+                    type: "feedback",
+                    run_ref: request.runRef,
+                    worked: request.worked,
+                    note: request.note || ""
+                }));
+                sendResponse({ status: "sent" });
+            } else {
+                sendResponse({ status: "error", message: "Backend not connected" });
+            }
+        });
+        return true;
+    }
     if (request.action === "reconnect") {
         console.log("Reconnecting to: " + request.backend_url);
         connect(request.backend_url);
