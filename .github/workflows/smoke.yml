@@ -40,4 +40,12 @@ jobs:
       - name: Run smoke test
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Candidates for the backend agent, each run once on the backend scenario.
+          SMOKE_COMPARE_BACKEND_MODELS: >-
+            openai/gpt-5.4,
+            openai/gpt-5.4-mini,
+            deepseek/deepseek-v4-pro,
+            ~deepseek/deepseek-pro-latest,
+            ~deepseek/deepseek-v4-flash-latest,
+            google/gemini-2.5-flash
         run: python scripts/smoke_test.py

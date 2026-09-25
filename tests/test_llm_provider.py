@@ -75,13 +75,13 @@ def test_openrouter_requires_providers_that_support_tools_and_json(env, monkeypa
     llm = LLM(ResponseCache(str(tmp_path), 0), client)
     asyncio.run(llm.ask("m", "plain", cache=False))
     asyncio.run(llm.ask("m", "as json", json_mode=True, cache=False))
-    assert "extra_body" not in client.requests[0]
-    assert client.requests[1]["extra_body"] == {"provider": {"require_parameters": True}}
+    assert client.requests[0]["extra_body"] == {"usage": {"include": True}}
+    assert client.requests[1]["extra_body"] == {"usage": {"include": True}, "provider": {"require_parameters": True}}
 
     monkeypatch.setattr(llm_module.settings, "llm", env(LLM_PROVIDER="groq", GROQ_API_KEY="k"))
     groq_client = ScriptedGroq([{"json": {"a": 1}}])
     asyncio.run(LLM(ResponseCache(str(tmp_path), 0), groq_client).ask("m", "x", json_mode=True, cache=False))
-    assert "extra_body" not in groq_client.requests[0]  # an OpenRouter-only option
+    assert "extra_body" not in groq_client.requests[0]  # OpenRouter-only options
 
 
 def test_tool_results_are_json_objects_and_prose_answers_get_a_json_retry(tmp_path):
@@ -103,3 +103,24 @@ def test_tool_results_are_json_objects_and_prose_answers_get_a_json_retry(tmp_pa
     assert json.loads(tool_message["content"]) == {"output": file_text}  # the file, not the list inside it
     assert client.requests[2]["response_format"] == {"type": "json_object"}
     assert "ONLY the JSON object" in client.requests[2]["messages"][-1]["content"]
+
+
+def test_usage_and_openrouter_cost_are_added_up(tmp_path):
+    class Usage:
+        def __init__(self, prompt, completion, cost):
+            self.prompt_tokens, self.completion_tokens, self.model_extra = prompt, completion, {"cost": cost}
+
+    client = ScriptedGroq([{"json": {"a": 1}}, {"json": {"a": 2}}])
+    original = client.create
+    usages = iter([Usage(1000, 200, 0.0012), Usage(500, 100, 0.0006)])
+
+    def create(**kwargs):
+        completion = original(**kwargs)
+        completion.usage = next(usages)
+        return completion
+    client.create = create
+    llm = LLM(ResponseCache(str(tmp_path), 0), client)
+    asyncio.run(llm.ask("m", "one", cache=False))
+    asyncio.run(llm.ask("m", "two", cache=False))
+    assert llm.usage["input_tokens"] == 1500 and llm.usage["output_tokens"] == 300
+    assert round(llm.usage["cost"], 6) == 0.0018

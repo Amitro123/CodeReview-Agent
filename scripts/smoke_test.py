@@ -8,6 +8,10 @@ calls, time and root causes as a table (GitHub step summary + stdout).
 Fails only when something breaks (an HTTP error, a crash, an unparseable answer). A route
 other than the expected one is reported, not failed: that is exactly what this is for.
 
+With SMOKE_COMPARE_BACKEND_MODELS="model-a,model-b,...", it also runs the backend scenario
+once per model (as the backend agent's model) and reports whether each found the real cause,
+with calls, tokens, OpenRouter's reported cost and time. Comparison runs never fail the job.
+
 Usage: OPENROUTER_API_KEY=... python scripts/smoke_test.py
 """
 import asyncio
@@ -202,6 +206,58 @@ async def run_scenarios() -> tuple[list[dict], bool]:
     return rows, ok
 
 
+def found_backend_cause(root_cause: str) -> bool:
+    """The orders bug: legacy orders have a numeric customer_id, customers are keyed by "c-N",
+    so the lookup raises KeyError. Credit an answer that names the KeyError or the id type mismatch."""
+    text = (root_cause or "").lower()
+    mismatch = "customer_id" in text and any(w in text for w in ("int", "numeric", "number", "legacy", "seed"))
+    return "keyerror" in text or mismatch
+
+
+async def compare_backend_models(models: list[str]) -> list[dict]:
+    from src.router.pipeline import RoutedAnalysis
+
+    scenario = next(s for s in SCENARIOS if s["expected"] == "backend")
+    request = {**scenario["request"], "force_category": "backend"}  # routing isn't what's compared
+    rows = []
+    for model in models:
+        row = {"model": model}
+        started = time.monotonic()
+        try:
+            routed = RoutedAnalysis()
+            routed.config.agents["backend"].model = model
+            c, route = await routed.classify(request)
+            result = await routed.run(request, c, route)
+            from src.kb.wiki import KnowledgeBase
+            run = KnowledgeBase.for_project(result["repo"], result["page_url"]).load_run(result["run_id"])
+            row.update(root_cause=run["root_cause"], files=run["files"], parse_error=run["parse_error"],
+                       found=not run["parse_error"] and found_backend_cause(run["root_cause"]),
+                       calls=routed.llm_calls, **routed.usage)
+        except Exception as e:
+            row["error"] = f"{type(e).__name__}: {e}"
+        row["seconds"] = round(time.monotonic() - started, 1)
+        print(json.dumps(row, ensure_ascii=False, default=str), flush=True)
+        rows.append(row)
+    return rows
+
+
+def comparison_report(rows: list[dict]) -> str:
+    lines = ["## Backend agent: model comparison", "",
+             "Same bug (orders page 2 → 500; the cause is in the seed data), backend agent only, 6 tool turns.", "",
+             "| Model | Found the real cause | Calls | Tokens in / out | Cost (OpenRouter) | Time | Root cause | Files |",
+             "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        if "error" in r:
+            lines.append(f"| `{r['model']}` | **error** | | | | {r['seconds']}s | {cell(r['error'], 200)} | |")
+            continue
+        verdict = "✅" if r["found"] else ("❌ (no JSON)" if r["parse_error"] else "❌")
+        cost = f"${r['cost']:.4f}" if r.get("cost") else "n/a"
+        lines.append(f"| `{r['model']}` | {verdict} | {r['calls']} | {r['input_tokens']:,} / {r['output_tokens']:,} | "
+                     f"{cost} | {r['seconds']}s | {cell(r.get('root_cause'), 140)} | "
+                     f"{cell(', '.join(r.get('files') or []), 60)} |")
+    return "\n".join(lines) + "\n"
+
+
 def report(rows: list[dict]) -> str:
     lines = ["## Smoke test: routed analysis on real models", "",
              "| Scenario | Expected | Routed to | Confidence | Method | LLM calls | Jev calls | Time | Root cause | Files |",
@@ -249,6 +305,8 @@ def main() -> int:
 
     rows, ok = asyncio.run(run_scenarios())
     summary = report(rows)
+    if models := [m.strip() for m in os.getenv("SMOKE_COMPARE_BACKEND_MODELS", "").split(",") if m.strip()]:
+        summary += "\n" + comparison_report(asyncio.run(compare_backend_models(models)))
     print(summary)
     if path := os.getenv("GITHUB_STEP_SUMMARY"):
         with open(path, "a", encoding="utf-8") as f:

@@ -42,16 +42,38 @@ class LLM:
             )
         self.client = client
         self.calls = 0
+        # Token and cost totals for this instance's calls; cost is what OpenRouter reports (USD).
+        self.usage = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
 
     async def _create(self, **kwargs):
-        if settings.llm.provider == "openrouter" and ("tools" in kwargs or "response_format" in kwargs):
-            # Route only to providers that actually support tool calls / JSON mode; by default
-            # OpenRouter may pick one that silently ignores them.
-            kwargs["extra_body"] = {"provider": {"require_parameters": True}}
+        if settings.llm.provider == "openrouter":
+            # Report each call's cost in the response's usage.
+            extra: dict = {"usage": {"include": True}}
+            if "tools" in kwargs or "response_format" in kwargs:
+                # Route only to providers that actually support tool calls / JSON mode; by
+                # default OpenRouter may pick one that silently ignores them.
+                extra["provider"] = {"require_parameters": True}
+            kwargs["extra_body"] = extra
         self.calls += 1
         print(f"DEBUG: LLM call #{self.calls} -> {kwargs['model']}", flush=True)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self.client.chat.completions.create(**kwargs))
+        completion = await loop.run_in_executor(None, lambda: self.client.chat.completions.create(**kwargs))
+        self._add_usage(getattr(completion, "usage", None))
+        return completion
+
+    def _add_usage(self, usage: Any) -> None:
+        if usage is None:
+            return
+        self.usage["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+        self.usage["output_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
+        # OpenRouter adds the call's cost to the usage object; other providers don't.
+        cost = getattr(usage, "cost", None)
+        if cost is None:
+            cost = (getattr(usage, "model_extra", None) or {}).get("cost")
+        try:
+            self.usage["cost"] += float(cost or 0)
+        except (TypeError, ValueError):
+            pass
 
     def _key(self, model: str, messages: Any, extra: tuple) -> str:
         # Screenshots are large data URLs; key on their hash rather than the raw bytes.

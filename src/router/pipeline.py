@@ -46,6 +46,11 @@ class RoutedAnalysis:
         return self.agent.llm.calls + self.ci_agent.llm.calls
 
     @property
+    def usage(self) -> dict:
+        """Tokens and OpenRouter-reported cost (USD) across both agents' calls."""
+        return {k: self.agent.llm.usage[k] + self.ci_agent.llm.usage[k] for k in self.agent.llm.usage}
+
+    @property
     def classifier_calls(self) -> int:
         return self.classifier.jev.calls if self.classifier.jev else 0
 
