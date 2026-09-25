@@ -63,11 +63,19 @@ def error_signature(network_errors: list, console_errors: list) -> str:
     return " | ".join(p for p in parts if p.strip())
 
 
+# Hosts where the extension's `repo` really names the repository (owner/repo on GitHub,
+# org/project/repo on Azure DevOps) rather than being the current route of some site.
+CODE_HOSTS = ("github.com", "dev.azure.com", ".visualstudio.com")
+
+# Confidence buckets for the routing calibration report.
+CALIBRATION_BUCKETS = [(0.0, 0.5), (0.5, 0.7), (0.7, 0.85), (0.85, 0.95), (0.95, 1.01)]
+
+
 def project_key(repo: Optional[str], page_url: Optional[str]) -> str:
-    """Stable identity for a project: owner/repo on GitHub, the page host elsewhere
-    (on a non-GitHub site the extension's `repo` is just the current route)."""
+    """Stable identity for a project: the repository on GitHub / Azure DevOps, the page host
+    elsewhere (on other sites the extension's `repo` is just the current route)."""
     host = urlparse(page_url).netloc.lower() if page_url else ""
-    if not host or host.endswith("github.com"):
+    if not host or host.endswith(CODE_HOSTS):
         return (repo or "").strip()
     return host
 
@@ -131,7 +139,7 @@ class KnowledgeBase:
     # --- raw sources -------------------------------------------------------------
 
     def record_run(self, kind: str, query: str, analysis: dict[str, Any], page_url: Optional[str] = None,
-                   error_signature: str = "") -> str:
+                   error_signature: str = "", route: Optional[dict] = None) -> str:
         """Stores one analysis as an immutable raw source. Always recorded - even a garbled
         model answer - so nothing is silently lost. Returns the run id."""
         self._ensure()
@@ -151,6 +159,9 @@ class KnowledgeBase:
             "confidence": analysis.get("confidence", "low"),
             "verification_checks": analysis.get("verification_checks", []),
             "parse_error": bool(analysis.get("parse_error")),
+            # How the router chose the agent: category, probabilities, method (jev / llm /
+            # source / user) and, for a user override, the run it overrides.
+            "route": route,
         }
         (self.raw_dir / f"{run_id}.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding="utf-8")
         self._log(f"run {run_id} ({kind}): {query or '(no query)'}")
@@ -206,6 +217,63 @@ class KnowledgeBase:
         graph = self.graph_path.read_text(encoding="utf-8") if self.graph_path.exists() else ""
         verdicts = sorted(p.name for p in self.raw_dir.glob("*.feedback.json")) if self.raw_dir.exists() else []
         return hashlib.sha256((graph + "|" + ",".join(verdicts)).encode()).hexdigest()[:16]
+
+    # --- routing -----------------------------------------------------------------
+
+    def _runs(self) -> list[dict]:
+        if not self.raw_dir.exists():
+            return []
+        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.raw_dir.glob("*.json"))
+                if RUN_ID_RE.match(p.stem)]
+
+    def category_prior(self, signature: str) -> dict[str, int]:
+        """How often runs with this exact error signature were routed to each category and
+        then confirmed with 👍. Given to the classifier as evidence; no LLM call."""
+        counts: dict[str, int] = {}
+        if not signature.strip():
+            return counts
+        for run in self._runs():
+            category = (run.get("route") or {}).get("category")
+            if category and run.get("error_signature") == signature:
+                feedback = self.load_feedback(run["run_id"])
+                if feedback and feedback.get("worked"):
+                    counts[category] = counts.get(category, 0) + 1
+        return counts
+
+    def calibration(self) -> list[dict]:
+        """Accuracy of automatic routing per confidence bucket. A route counts as right when
+        its fix got 👍 and as wrong when the user re-routed it to another category; runs with
+        neither aren't counted. Compare `accuracy` with `mean_confidence`: calibrated
+        probabilities keep the two close."""
+        runs = self._runs()
+        overridden = {(r.get("route") or {}).get("overrides") for r in runs} - {None}
+        buckets = [{"range": f"{lo:.2f}-{min(hi, 1.0):.2f}", "count": 0, "right": 0, "confidence_sum": 0.0,
+                    "methods": {}} for lo, hi in CALIBRATION_BUCKETS]
+        for run in runs:
+            route = run.get("route") or {}
+            if route.get("method") not in ("jev", "llm") or "confidence" not in route:
+                continue
+            feedback = self.load_feedback(run["run_id"])
+            if run["run_id"] in overridden:
+                right = False
+            elif feedback and feedback.get("worked"):
+                right = True
+            else:
+                continue
+            index = next(i for i, (lo, hi) in enumerate(CALIBRATION_BUCKETS) if lo <= route["confidence"] < hi)
+            bucket = buckets[index]
+            bucket["count"] += 1
+            bucket["right"] += int(right)
+            bucket["confidence_sum"] += float(route["confidence"])
+            bucket["methods"][route["method"]] = bucket["methods"].get(route["method"], 0) + 1
+        report = []
+        for bucket in buckets:
+            if bucket["count"]:
+                report.append({"range": bucket["range"], "count": bucket["count"],
+                               "accuracy": round(bucket["right"] / bucket["count"], 3),
+                               "mean_confidence": round(bucket.pop("confidence_sum") / bucket["count"], 3),
+                               "methods": bucket["methods"]})
+        return report
 
     # --- wiki --------------------------------------------------------------------
 

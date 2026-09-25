@@ -1,0 +1,136 @@
+"""One entry point for every reported problem: classify, decide the route, run the agents.
+
+  request ──> signals ──> classifier (Jev, or 1 LLM call) ──> policy ──> agents
+               (0 calls)   skipped on a CI run page or when         frontend: visual agent, then code agent
+                           the user picked the category             backend / config_env: code agent
+                                                                    ci: CI agent
+"""
+from typing import Any, Awaitable, Callable, Optional
+
+from src.agents.llm import ToolExecutor
+from src.agents.multi_agent import MultiAgentAnalyzer
+from src.agents.universal_agent import UniversalAgent
+from src.config import settings
+from src.kb.cache import ResponseCache
+from src.kb.wiki import KnowledgeBase
+from src.router.classifier import CATEGORIES, Classification, Classifier
+from src.router.policy import FOCUS, Route, RoutingConfig, decide, load_config
+from src.router.signals import build_state, detect_source, error_text
+
+CI_SOURCES = ("azure_devops", "github_actions")
+LABELS = {"frontend": "Frontend", "backend": "Backend", "ci": "CI", "config_env": "Config / environment"}
+StatusCallback = Callable[[str], Awaitable[None]]
+
+
+async def _no_status(_: str) -> None:
+    return None
+
+
+def describe_route(c: Classification, route: Route) -> str:
+    how = {"jev": "Jev", "llm": "LLM estimate, not calibrated", "source": "CI run page", "user": "your choice"}[c.method]
+    agents = " → ".join(LABELS[x] for x in route.categories) or "none yet"
+    return f"Routed to: {agents} ({LABELS[c.category]} {c.confidence:.0%}, {how})"
+
+
+class RoutedAnalysis:
+    def __init__(self, cache: Optional[ResponseCache] = None, client: Any = None,
+                 classifier: Optional[Classifier] = None, config: Optional[RoutingConfig] = None):
+        cache = cache or ResponseCache()
+        self.agent = UniversalAgent(cache, client)
+        self.ci_agent = MultiAgentAnalyzer(cache, client)
+        self.classifier = classifier or Classifier(self.agent.llm)
+        self.config = config or load_config()
+
+    @property
+    def llm_calls(self) -> int:
+        return self.agent.llm.calls + self.ci_agent.llm.calls
+
+    @property
+    def classifier_calls(self) -> int:
+        return self.classifier.jev.calls if self.classifier.jev else 0
+
+    async def classify(self, request: dict) -> tuple[Classification, Route]:
+        page_url = request.get("page_url") or (request.get("dom") or {}).get("url")
+        forced = request.get("force_category")
+        if forced in CATEGORIES:
+            c = Classification.certain(forced, "user")
+        elif detect_source(page_url) in CI_SOURCES and request.get("ci"):
+            # A failed pipeline run page: there is nothing to decide.
+            c = Classification.certain("ci", "source")
+        else:
+            kb = KnowledgeBase.for_project(request.get("repo"), page_url)
+            c = await self.classifier.classify(build_state(request, kb.category_prior(error_text(request))))
+        route = Route([c.category], False, "") if c.method in ("user", "source") else decide(c, self.config)
+        return c, route
+
+    async def run(self, request: dict, c: Classification, route: Route,
+                  browser_tool: Optional[ToolExecutor] = None, status: StatusCallback = _no_status) -> dict:
+        query = request.get("query") or ""
+        dom = request.get("dom") or {}
+        repo = request.get("repo") or "."
+        page_url = request.get("page_url") or dom.get("url")
+        network_errors = request.get("network_errors") or []
+        console_errors = request.get("console_errors") or []
+        record = {**c.to_dict(), "agents": route.categories, "overrides": request.get("overrides_run")}
+        focus = "; ".join(FOCUS[x] for x in route.categories)
+        agents = self.config.agents
+
+        if "ci" in route.categories:
+            profile = agents["ci"]
+            await status("CI agent: reading the failed steps...")
+            result = await self.ci_agent.analyze_ci_failure(
+                request.get("ci_log") or (request.get("ci") or {}).get("log") or "", repo, ci=request.get("ci"), query=query, page_url=page_url,
+                model=profile.model_id(), tools=set(profile.tools), max_turns=profile.max_turns,
+                focus=focus if len(route.categories) > 1 else "", route=record,
+            )
+            return {"plan": result["solution"], "run_id": result["run_id"], "files": list(result["files"].values()),
+                    "repo": repo, "page_url": page_url}
+
+        screenshot = request.get("screenshot")
+        ui_analysis: dict = {}
+        wants_page = (c.needs_browser or 0) >= 0.5 and bool(screenshot or browser_tool)
+        if "frontend" in route.categories or wants_page:
+            profile = agents["frontend"]
+            await status("Frontend agent: looking at the page...")
+            model = profile.model_id() if (screenshot or profile.model != "vision") else None
+            ui_analysis = await self.agent.visual_agent(
+                screenshot, query, dom, network_errors, console_errors,
+                browser_tool=browser_tool if profile.uses("browser") else None,
+                model=model, max_turns=profile.max_turns,
+            )
+
+        # The agent that writes the plan: the last one in the route; a frontend finding still
+        # needs the code, so frontend-only routes use the backend agent's code access.
+        lead = route.categories[-1]
+        profile = agents["backend"] if lead == "frontend" else agents[lead]
+        await status(f"{LABELS[lead]} agent: reviewing the code...")
+        code_analysis = await self.agent.code_agent(
+            repo, ui_analysis, dom.get("selectedElement") or {}, query=query, page_url=page_url,
+            browser_tool=browser_tool, network_errors=network_errors, console_errors=console_errors,
+            model=profile.model_id(), tools=set(profile.tools), max_turns=profile.max_turns, focus=focus,
+        )
+        plan = await self.agent.integrator(ui_analysis, code_analysis)
+        run_id = self.agent.record_run(query, repo, page_url, code_analysis, network_errors, console_errors,
+                                       route=record)
+        md_path = self.agent.save_universal_mds(plan, query, repo, network_errors, console_errors, screenshot)
+        return {"plan": plan, "run_id": run_id, "files": [md_path], "repo": repo, "page_url": page_url}
+
+
+def route_message(c: Classification, route: Route) -> dict:
+    """What the side panel shows before the agents run: the decision and the alternatives."""
+    return {
+        "type": "route",
+        "category": c.category,
+        "confidence": c.confidence,
+        "probabilities": c.probabilities,
+        "method": c.method,
+        "calibrated": c.calibrated,
+        "agents": route.categories,
+        "ask_user": route.ask_user,
+        "enough_evidence": c.enough_evidence,
+        "text": describe_route(c, route) if not route.ask_user else
+                f"Not sure where this is ({route.reason}). Pick where to look:",
+        "labels": LABELS,
+        "notes": c.notes,
+        "provider": settings.llm.provider,
+    }

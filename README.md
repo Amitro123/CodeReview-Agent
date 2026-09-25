@@ -17,6 +17,8 @@
 - 📸 **Native Screenshots**: Captures exactly what you see in your logged-in tab via `chrome.tabs.captureVisibleTab`, analyzed directly by a vision model.
 - 🛠️ **DevTools Integration**: Captures Network (4xx/5xx) and Console errors for deeper context.
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
+- 🧭 **Routed to the right agent**: every problem is first classified - frontend, backend, CI or config/environment - by [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev), a model that returns calibrated probabilities instead of text, through OpenRouter with the same key. The side panel shows the decision ("Backend 92%") and lets you re-run with another agent (see [Routing](#-routing)).
+- 🏭 **CI runs on Azure DevOps and GitHub Actions**: on a failed run's page the extension reads the failing steps, their error annotations and step logs from the CI system's API (Azure DevOps with your browser session, no token).
 - 🛠️ **Real MCP Tool Use**: The code agent runs an actual MCP server (`src/repo_tools`), sandboxed to your repo, giving it `list_files`/`read_file`/`search_code` tools instead of guessing file names from a prompt.
 - 🔎 **Live Page Inspection**: Both agents can call `inspect_element` on your open tab (computed styles, hidden/covered state, size) through the extension, and the code agent can pull the page's raw console/network errors - no Anthropic subscription or other browser agent needed.
 - ✅ **Verify Fix**: Each fix plan comes with concrete browser checks. After you apply the fix, **Verify fix** reloads the page and re-runs them with no LLM call; the result is stored with the run and fed to the knowledge base as evidence (your 👍/👎 stays the verdict).
@@ -107,6 +109,35 @@ The LLM cache lives in `~/.codereview-agent/cache` (`LLM_CACHE_DIR`); set `LLM_C
 
 ---
 
+## 🧭 Routing
+
+```
+problem ──> signals ──────> classifier ─────────────> policy ──────> agents
+            errors, query,  Jev via OpenRouter:       agents.yaml    frontend  Gemini + the live page, then the code
+            CI failed steps typed answers with        thresholds     backend   code + repo/KB tools, no screenshot
+            (no LLM)        calibrated probabilities                 ci        failed steps + logs, then the code
+                            (1 LLM call if no Jev)                   config_env config, env vars, dependencies
+```
+
+- **Classify**: one System One call answers three typed questions about the problem's evidence -
+  `category` (a choice with a probability per category), `needs_browser` and `enough_evidence`
+  (yes/no probabilities). A failed CI run's page skips classification: it goes to the CI agent.
+- **Decide** (in code, from `agents.yaml`): one agent at ≥ 85%; two when the top two together reach
+  it (the frontend agent first, handing its JSON findings on); otherwise the side panel asks you to pick.
+- **Learn**: the route is stored with the run. A 👍 confirms it; re-running as another category marks it
+  wrong. The next classification of the same errors sees what was verified before, and
+  `python -m src.kb.cli calibration <kb_dir>` shows whether "90%" really is right 90% of the time.
+
+Each agent's model, tools and turn cap are in [`agents.yaml`](agents.yaml) - e.g. put a stronger model
+on the backend agent only. Without OpenRouter, set `TYPESAFE_API_KEY` for Jev, or leave it unset and one
+LLM call classifies instead (its probabilities are marked as uncalibrated).
+
+For Azure DevOps, map the repository in `REPO_PATHS` as `org/project/repo` so the CI agent can read the code:
+
+```bash
+REPO_PATHS=acme/Shop/shop-api=/path/to/shop-api
+```
+
 ## 🧠 Knowledge base
 
 Each project gets a knowledge base that grows from verified runs, following Karpathy's
@@ -132,6 +163,7 @@ Maintenance, no LLM calls:
 ```bash
 python -m src.kb.cli graph /path/to/project/.codereview-kb
 python -m src.kb.cli lint  /path/to/project/.codereview-kb --repo /path/to/project
+python -m src.kb.cli calibration /path/to/project/.codereview-kb
 ```
 
 To give Claude Code or Cursor the same knowledge, register the KB server in the project's `.mcp.json`:

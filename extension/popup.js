@@ -54,7 +54,8 @@ function setupEventListeners() {
     contextPill.addEventListener('click', () => setActivePill('context'));
     ciActionPill.addEventListener('click', () => {
         setActivePill('ci');
-        triggerCIAnalysis();
+        addHistoryItem('user', 'Why did this pipeline run fail?');
+        triggerAnalysis('Why did this pipeline run fail?');
     });
 }
 
@@ -111,8 +112,8 @@ function handleSendMessage() {
     if (!query) return;
 
     universalChatInput.value = '';
-    addHistoryItem('user', query);
-    triggerUniversalAnalysis(query);
+    addHistoryItem('user', escapeHtml(query));
+    triggerAnalysis(query);
 }
 
 function showThinkingBubble(message) {
@@ -133,60 +134,102 @@ function removeThinkingBubble() {
     if (existingBubble) existingBubble.remove();
 }
 
-function triggerUniversalAnalysis(query) {
-    showThinkingBubble('Analyzing page context...');
+// Every question goes through the backend router, which decides which agent handles it.
+// On a CI run page the content script also reads the failed steps from the CI system's API.
+function triggerAnalysis(query) {
+    showThinkingBubble('Reading the page...');
 
-    // Get active tab context
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs[0]) return;
 
-        chrome.tabs.sendMessage(tabs[0].id, { action: "get_universal_context" }, (response) => {
-            if (chrome.runtime.lastError) {
+        chrome.tabs.sendMessage(tabs[0].id, { action: "get_context" }, (context) => {
+            if (chrome.runtime.lastError || !context) {
                 removeThinkingBubble();
                 addHistoryItem('bot', 'Error: Could not connect to page. Try reloading the tab.');
                 return;
             }
-
-            if (response) {
-                chrome.runtime.sendMessage({
-                    action: "universal-analyze",
-                    query: query,
-                    dom: response.dom,
-                    repo: response.repo
-                });
-                showThinkingBubble('Agents thinking...');
+            if (context.ci && context.ci.api_error) {
+                addHistoryItem('bot', escapeHtml(`Couldn't read the run from the CI API (${context.ci.api_error}); using the text on the page.`));
             }
+            chrome.runtime.sendMessage({
+                action: "analyze",
+                query,
+                dom: context.dom,
+                repo: context.repo,
+                ci: context.ci
+            }, (response) => {
+                if (!response || response.status !== 'sent') {
+                    removeThinkingBubble();
+                    addHistoryItem('bot', `Error: ${escapeHtml(response?.message || 'backend not connected')}`);
+                }
+            });
+            showThinkingBubble('Classifying the problem...');
         });
     });
 }
 
-function triggerCIAnalysis() {
-    showThinkingBubble('Accessing CI Logs...');
-
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (!tabs[0]) return;
-
-        chrome.tabs.sendMessage(tabs[0].id, { action: "get_ci_data" }, (response) => {
-            if (chrome.runtime.lastError) {
-                removeThinkingBubble();
-                addHistoryItem('bot', 'Error: Not a GitHub Actions page? Reload to try again.');
-                return;
-            }
-
-            if (response) {
-                addHistoryItem('user', `Analyzing CI Failure: ${response.repo}`);
-                chrome.runtime.sendMessage({
-                    action: "ci-analyze",
-                    ci_log: response.ci_logs,
-                    repo: response.repo
-                });
-                showThinkingBubble('Multi-Agent Analysis started...');
-            } else {
-                removeThinkingBubble();
-                addHistoryItem('bot', 'Error: No data received from page.');
-            }
-        });
+function reroute(category, overridesRun) {
+    chrome.runtime.sendMessage({ action: "reroute", category, overridesRun }, (response) => {
+        if (!response || response.status !== 'sent') {
+            addHistoryItem('bot', `Error: ${escapeHtml(response?.message || 'backend not connected')}`);
+            return;
+        }
+        showThinkingBubble('Re-running with the agent you picked...');
     });
+}
+
+// Buttons for the categories other than `current`, most likely first.
+function categoryButtons(route, onPick, current) {
+    const row = document.createElement('div');
+    row.className = 'route-choices';
+    const ranked = Object.entries(route.probabilities).sort((a, b) => b[1] - a[1]);
+    for (const [category, probability] of ranked) {
+        if (category === current) continue;
+        const button = document.createElement('button');
+        button.className = 'feedback-btn';
+        // Percentages only when they came from the classifier (not from the page type or a pick).
+        const estimated = route.method === 'jev' || route.method === 'llm';
+        button.textContent = estimated ? `${route.labels[category]} ${Math.round(probability * 100)}%` : route.labels[category];
+        button.addEventListener('click', () => {
+            row.querySelectorAll('button').forEach(b => { b.disabled = true; });
+            onPick(category);
+        });
+        row.appendChild(button);
+    }
+    return row;
+}
+
+// Labels and probabilities of the last route, for the re-route buttons under the result.
+let lastRoute = null;
+
+function showRoute(route) {
+    // A re-run the user picked keeps the classifier's original estimate for the buttons.
+    lastRoute = route.method === 'user' && lastRoute ? { ...lastRoute, text: route.text } : route;
+    const box = document.createElement('div');
+    box.className = 'route';
+    const text = document.createElement('div');
+    text.className = 'route-text';
+    text.textContent = route.text;
+    box.appendChild(text);
+    if (route.notes && route.notes.length) {
+        const notes = document.createElement('div');
+        notes.className = 'route-note';
+        notes.textContent = route.notes.join(' ');
+        box.appendChild(notes);
+    }
+    if (route.ask_user) {
+        removeThinkingBubble();
+        box.appendChild(categoryButtons(route, (category) => reroute(category, null), null));
+    } else if (route.enough_evidence !== null && route.enough_evidence < 0.3) {
+        const hint = document.createElement('div');
+        hint.className = 'route-note';
+        hint.textContent = 'There is little to go on - describing what you expected and what happened helps.';
+        box.appendChild(hint);
+    }
+    const emptyState = chatHistory.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+    chatHistory.appendChild(box);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
 }
 
 // --- History Management ---
@@ -335,6 +378,14 @@ function addFeedbackControls(runRef) {
 
     box.append(question, ...buttons, note, status);
     addVerifyControls(box, runRef);
+    // A wrong route is feedback too: re-running as another category records the override,
+    // which is what the routing calibration report counts as a miss.
+    if (lastRoute && runRef.category) {
+        const label = document.createElement('span');
+        label.className = 'route-note';
+        label.textContent = 'Wrong area? Re-run as:';
+        box.append(label, categoryButtons(lastRoute, (category) => reroute(category, runRef.run_id), runRef.category));
+    }
     chatHistory.appendChild(box);
     chatHistory.scrollTop = chatHistory.scrollHeight;
 }
@@ -343,12 +394,15 @@ function addFeedbackControls(runRef) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "analysis_result") {
         removeThinkingBubble();
-        addHistoryItem('bot', "<b>[DONE] Analysis Complete!</b><br>Check your IDE for the fix plan.");
+        addHistoryItem('bot', "<b>[DONE] Analysis Complete!</b>");
         // The answer can echo text scraped from the analyzed page; never render it as HTML.
         addHistoryItem('bot', escapeHtml(request.text));
         if (request.runRef && request.runRef.run_id) {
             addFeedbackControls(request.runRef);
         }
+    }
+    if (request.action === "route") {
+        showRoute(request.route);
     }
     if (request.action === "status_update") {
         showThinkingBubble(request.text);

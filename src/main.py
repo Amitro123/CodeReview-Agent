@@ -184,6 +184,42 @@ async def verify_fix(websocket: WebSocket, pending: list, message: dict) -> dict
     return {"type": "verification_result", "run_id": run["run_id"], **result}
 
 
+async def handle_analyze(websocket: WebSocket, pending: list, message: dict) -> None:
+    """The routed flow for any reported problem: classify it (Jev through OpenRouter, or one
+    LLM call), tell the side panel where it's going, then run the chosen agents. When the
+    classifier isn't sure, the panel asks the user and re-sends with `force_category`."""
+    from src.router.pipeline import RoutedAnalysis, describe_route, route_message
+
+    async def browser_tool(name: str, args: dict) -> str:
+        return await request_browser_tool(websocket, pending, name, args)
+
+    async def status(text: str) -> None:
+        await websocket.send_json({"type": "status", "message": text})
+
+    pipeline = RoutedAnalysis()
+    if not message.get("force_category"):
+        await status("Classifying the problem...")
+    c, route = await pipeline.classify(message)
+    print(f"DEBUG: route {route.categories or 'ask user'} via {c.method} ({c.category} {c.confidence:.2f})", flush=True)
+    await websocket.send_json(route_message(c, route))
+    if route.ask_user:
+        return
+    result = await pipeline.run(message, c, route, browser_tool=browser_tool, status=status)
+    await trigger_ide_agent(result["plan"])
+    print(f"DEBUG: routed analysis done with {pipeline.llm_calls} LLM call(s) and "
+          f"{pipeline.classifier_calls} Jev call(s)", flush=True)
+    await websocket.send_json({
+        "type": "analysis_result",
+        "answer": f"{describe_route(c, route)}\n\nFiles saved: {result['files']}\n\n{result['plan']}",
+        "metadata": {"source": "router", "llm_calls": pipeline.llm_calls,
+                     "classifier_calls": pipeline.classifier_calls, "provider": settings.llm.provider,
+                     "route": {"category": c.category, "confidence": c.confidence, "method": c.method,
+                               "agents": route.categories}},
+        "run_ref": {"run_id": result["run_id"], "repo": result["repo"], "page_url": result["page_url"],
+                    "category": c.category},
+    })
+
+
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -211,6 +247,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json(await verify_fix(websocket, pending, message))
                 except (ValueError, OSError) as e:
                     await websocket.send_json({"type": "error", "message": f"Verification failed: {e}"})
+                continue
+            if msg_type == "analyze":
+                try:
+                    await handle_analyze(websocket, pending, message)
+                except Exception as e:
+                    print(f"DEBUG: routed analysis error: {e}", flush=True)
+                    await websocket.send_json({"type": "error", "message": f"Analysis error: {e}"})
                 continue
             if msg_type == "feedback":
                 try:

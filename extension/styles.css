@@ -417,3 +417,28 @@ body {
     color: var(--text-primary);
     margin-top: 2px;
 }
+
+.route {
+    align-self: flex-start;
+    max-width: 90%;
+    border-left: 2px solid var(--accent);
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+.route-text {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.route-note {
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.route-choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
