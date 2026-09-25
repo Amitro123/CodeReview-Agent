@@ -89,6 +89,36 @@ FIXTURE = {
         def test_total_with_discount():
             assert order_total([{"price": 50, "qty": 2}], discount_percent=10) == 90
     """,
+    # The learning scenario: a cause no one can see in this code - the external fx-service
+    # rounds its rates - known only from a human's 👎 note.
+    "shop/currency.py": """
+        import httpx
+
+        FX_URL = "https://fx-service.internal/v3/rate"
+
+
+        def convert(amount: float, currency: str) -> float:
+            if currency == "USD":
+                return amount
+            rate = httpx.get(FX_URL, params={"from": "USD", "to": currency}).json()["rate"]
+            return round(amount * rate, 2)
+    """,
+    "api/cart.py": """
+        from shop.currency import convert
+
+
+        def cart_totals(items, currency):
+            lines = [convert(i["price"] * i["qty"], currency) for i in items]
+            return {"lines": lines, "total": round(sum(lines), 2)}
+    """,
+    "api/emails.py": """
+        from shop.currency import convert
+
+
+        def confirmation_email(order, currency):
+            total = convert(order["total_usd"], currency)
+            return f"Thanks for your order #{order['id']}. Total: {total:.2f} {currency}"
+    """,
     "azure-pipelines.yml": """
         trigger: [main]
         pool: {vmImage: ubuntu-latest}
@@ -226,6 +256,84 @@ async def run_scenarios() -> tuple[list[dict], bool]:
     return rows, ok
 
 
+LEARN_FIRST = {
+    "query": "Cart totals are a few cents off for customers paying in EUR",
+    "page_url": f"{PAGE}/cart", "repo": "shop", "force_category": "backend",
+    "dom": {"url": f"{PAGE}/cart", "pageTitle": "Cart"},
+    "console_errors": [], "network_errors": [],
+}
+LEARN_NOTE = ("Actual cause: fx-service v3 returns exchange rates rounded to 2 decimals, so every converted "
+              "amount drifts by a few cents. Our code is fine - request precision=6 from fx-service.")
+LEARN_SECOND = {
+    "query": "Order confirmation emails show GBP totals that are slightly wrong",
+    "page_url": f"{PAGE}/orders/confirmation", "repo": "shop", "force_category": "backend",
+    "dom": {"url": f"{PAGE}/orders/confirmation", "pageTitle": "Order confirmed"},
+    "console_errors": [], "network_errors": [],
+}
+
+
+def knows_hidden_cause(root_cause: str) -> bool:
+    """The note's knowledge: the rates themselves come rounded to 2 decimals from fx-service."""
+    text = (root_cause or "").lower()
+    rounded_rate = "rate" in text and re.search(r"\b(2|two) decimal", text) is not None
+    return rounded_rate or "precision=6" in text or ("fx-service" in text and "round" in text and "rate" in text)
+
+
+async def learning_scenario() -> dict:
+    """Does the knowledge base make the agents better? A bug whose cause is outside the code, a 👎
+    with the real cause, one ingest into the wiki, then a different symptom of the same cause."""
+    from src.agents.llm import LLM
+    from src.config import settings
+    from src.kb.cache import ResponseCache
+    from src.kb.wiki import KnowledgeBase
+    from src.router.pipeline import RoutedAnalysis
+
+    async def analyze(request: dict) -> tuple[dict, RoutedAnalysis]:
+        routed = RoutedAnalysis()
+        c, route = await routed.classify(request)
+        result = await routed.run(request, c, route)
+        run = KnowledgeBase.for_project(result["repo"], result["page_url"]).load_run(result["run_id"])
+        return run, routed
+
+    out: dict = {}
+    started = time.monotonic()
+    first, _ = await analyze(LEARN_FIRST)
+    out["first"] = {"root_cause": first["root_cause"], "knew": knows_hidden_cause(first["root_cause"])}
+
+    kb = KnowledgeBase.for_project("shop", LEARN_FIRST["page_url"])
+    kb.record_feedback(first["run_id"], worked=False, note=LEARN_NOTE)
+    pages = await kb.ingest(first["run_id"], LLM(ResponseCache()), settings.llm.text_model)
+    out["pages"] = pages
+    out["mistakes_logged"] = LEARN_NOTE[:40] in kb.mistakes_path.read_text(encoding="utf-8")
+    out["recalled"] = bool(kb.recall(LEARN_SECOND["query"]))
+
+    second, routed = await analyze(LEARN_SECOND)
+    tools = routed.agent.llm.tool_calls
+    out["second"] = {"root_cause": second["root_cause"], "knew": knows_hidden_cause(second["root_cause"]),
+                     "used_wiki_tools": sorted({t for t in tools if t in ("query_kb", "get_page")})}
+    out["seconds"] = round(time.monotonic() - started, 1)
+    print(json.dumps(out, ensure_ascii=False, default=str), flush=True)
+    return out
+
+
+def learning_report(r: dict) -> str:
+    if "error" in r:
+        return f"## Learning from a 👎\n\n**error**: {cell(r['error'], 300)}\n"
+    yes = lambda b: "✅" if b else "❌"
+    return "\n".join([
+        "## Learning from a 👎", "",
+        "A cause outside the code (fx-service rounds its rates) → 👎 with the real cause → one ingest into the wiki → "
+        "a different symptom of the same cause.", "",
+        "| Step | Result |", "|---|---|",
+        f"| 1. Cart totals off (empty wiki) | knew the cause: {yes(r['first']['knew'])} - {cell(r['first']['root_cause'])} |",
+        f"| 2. 👎 + note → MISTAKES.md | {yes(r['mistakes_logged'])} |",
+        f"| 3. Ingest → wiki pages | {len(r['pages'])}: {cell(', '.join(r['pages']), 120)} |",
+        f"| 4. Recall matches the next problem | {yes(r['recalled'])} |",
+        f"| 5. Email totals off (with the wiki) | knew the cause: {yes(r['second']['knew'])} - {cell(r['second']['root_cause'])} |",
+        f"| Wiki tools the agent called | {', '.join(r['second']['used_wiki_tools']) or 'none (used the recalled page in its prompt)'} |",
+        f"| Time | {r['seconds']}s |", ""])
+
+
 def found_backend_cause(root_cause: str) -> bool:
     """The orders bug: legacy orders have a numeric customer_id, customers are keyed by "c-N",
     so the lookup raises KeyError. Credit an answer that names the KeyError, the seed data, or
@@ -319,7 +427,7 @@ def main() -> int:
     # Before importing the app: src.config reads these at import time.
     os.environ.update({
         "LLM_PROVIDER": "openrouter",
-        "REPO_PATHS": f"localhost:3000={fixture},acme/Shop/shop={fixture}",
+        "REPO_PATHS": f"localhost:3000={fixture},acme/Shop/shop={fixture},shop={fixture}",
         "KB_LOCATION": "central",
         "KB_DIR": str(work / "kb"),
         "LLM_CACHE_DIR": str(work / "cache"),
@@ -330,6 +438,15 @@ def main() -> int:
 
     rows, ok = asyncio.run(run_scenarios())
     summary = report(rows)
+    if os.getenv("SMOKE_LEARNING", "1") == "1":
+        try:
+            learned = asyncio.run(learning_scenario())
+            # Failing here means the cycle is broken (nothing written, nothing recalled), not that
+            # the second answer missed: that's the measurement, reported in the table.
+            ok = ok and bool(learned["pages"]) and learned["mistakes_logged"] and learned["recalled"]
+        except Exception as e:
+            learned, ok = {"error": f"{type(e).__name__}: {e}"}, False
+        summary += "\n" + learning_report(learned)
     if models := [m.strip() for m in os.getenv("SMOKE_COMPARE_BACKEND_MODELS", "").split(",") if m.strip()]:
         summary += "\n" + comparison_report(asyncio.run(compare_backend_models(models)))
     print(summary)

@@ -46,6 +46,8 @@ class LLM:
         self.usage = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
         # Sensitive runs: OpenRouter only routes to providers that don't store or train on prompts.
         self.private = False
+        # Names of the tools the model called, in order - what a run actually looked at.
+        self.tool_calls: list[str] = []
 
     async def _create(self, **kwargs):
         if settings.llm.provider == "openrouter":
@@ -161,6 +163,7 @@ class LLM:
                     except json.JSONDecodeError:
                         args = {}
                     print(f"DEBUG: tool call {tc.function.name} {json.dumps(args)[:200]}", flush=True)
+                    self.tool_calls.append(tc.function.name)
                     try:
                         result = await tool_executor(tc.function.name, args)
                     except Exception as e:

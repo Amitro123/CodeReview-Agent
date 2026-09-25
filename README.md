@@ -4,7 +4,6 @@
 [![OpenRouter](https://img.shields.io/badge/OpenRouter-any%20model-6566F1?style=for-the-badge)](https://openrouter.ai/)
 [![MCP](https://img.shields.io/badge/MCP-tools-black?style=for-the-badge)](https://modelcontextprotocol.io/)
 [![Chrome](https://img.shields.io/badge/Chrome-Extension-4285F4?style=for-the-badge&logo=google-chrome)](https://developer.chrome.com/docs/extensions)
-[![PRG](https://img.shields.io/badge/PRG-Enabled-brightgreen?style=for-the-badge)](https://github.com/USER/project-rules-generator)
 
 > **Tell it what's broken - on a web page or in a failed CI run - and it routes the problem to the right agent,
 > reads your code, writes a fix plan, verifies the fix in your browser and learns from your 👍/👎.**
@@ -334,23 +333,4 @@ scripts/smoke_test.py end-to-end run on real models
 
 ---
 
-## 🚀 Autonomous Workflow (PRG Autopilot)
-
-This project is managed by the **Project Rules Generator (PRG)**, featuring an autonomous execution loop.
-
-| Command | Action |
-| :--- | :--- |
-| `prg status` | View the real-time project dashboard and progress. |
-| `prg next` | Let the agent automatically execute the next pending task. |
-| `prg autopilot` | Runs the entire task loop until the project is finished. |
-| `prg query` | Smart search for tasks using weighted keyword matching. |
-
-## 🧠 Project Skills
-
-- 📑 **`analyze-code`**: Deep analysis of FastAPI endpoints and Pydantic validation.
-- ♻️ **`refactor-module`**: Structural cleanup following the factory pattern.
-- 🧪 **`test-coverage`**: Automated pytest execution with coverage reporting.
-- 🛡️ **`fastapi-security`**: Auditing authentication and dependency injection.
-
----
 *Built with ❤️ by Antigravity & Amit Production Engineering.*
