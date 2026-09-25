@@ -48,6 +48,28 @@ function captureScreenshot(windowId) {
     });
 }
 
+// Tab the current universal analysis is about; the backend's visual agent can inspect it.
+let analysisTabId = null;
+
+// Runs a backend tool_request (e.g. inspect_element) in the analyzed tab's content
+// script and sends the answer back as a tool_result with the same id.
+async function handleToolRequest(request) {
+    let result;
+    try {
+        if (analysisTabId === null) throw new Error("no page is being analyzed");
+        result = await chrome.tabs.sendMessage(analysisTabId, {
+            action: "run_tool",
+            tool: request.tool,
+            args: request.args || {}
+        });
+    } catch (e) {
+        result = `Error: ${e.message}`;
+    }
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "tool_result", id: request.id, result: result ?? "" }));
+    }
+}
+
 function attachDebugger(tabId) {
     return new Promise((resolve, reject) => {
         chrome.debugger.attach({ tabId: tabId }, "1.3", () => {
@@ -106,6 +128,9 @@ function initSocket(url) {
                 currentStatus = data.message; // Update current status
                 chrome.runtime.sendMessage({ action: "status_update", text: data.message });
             }
+            if (data.type === 'tool_request') {
+                handleToolRequest(data);
+            }
         };
 
         socket.onclose = () => {
@@ -158,6 +183,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
                     const tab = tabs[0];
                     const tabId = tab?.id;
+                    analysisTabId = tabId ?? null;
                     const screenshot = tab ? await captureScreenshot(tab.windowId) : null;
 
                     if (tabId) {

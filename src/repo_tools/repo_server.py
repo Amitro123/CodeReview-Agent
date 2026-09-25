@@ -12,7 +12,8 @@ from mcp.server.mcpserver import MCPServer
 REPO_ROOT = Path(os.environ.get("MCP_REPO_ROOT", ".")).resolve()
 
 EXCLUDED_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
-MAX_FILE_CHARS = 50_000
+# Every tool result is re-sent on each later turn of the loop, so keep file reads modest.
+MAX_FILE_CHARS = 20_000
 MAX_SEARCH_FILE_BYTES = 2_000_000
 MAX_LIST_RESULTS = 300
 MAX_SEARCH_RESULTS = 30

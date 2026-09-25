@@ -18,6 +18,9 @@
 - 🛠️ **DevTools Integration**: Captures Network (4xx/5xx) and Console errors for deeper context.
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
 - 🛠️ **Real MCP Tool Use**: The code agent runs an actual MCP server (`src/repo_tools`), sandboxed to your repo, giving it `list_files`/`read_file`/`search_code` tools instead of guessing file names from a prompt.
+- 🔎 **Live Page Inspection**: The visual agent can call `inspect_element` on your open tab (computed styles, hidden/covered state, size) when the screenshot isn't enough.
+- 💸 **Few LLM Calls**: A page analysis is 2 calls plus one per tool turn (tool turns are capped: 2 for the visual agent, 4 for the code agent); the fix plan is written by the code agent, so there's no separate integration call. CI analysis is 1 call. Repeats are served from a SQLite cache, keyed on the repo's git state so code changes invalidate it.
+- 🧠 **Memory**: Every run is stored as a lesson (root cause, fix, files). Later analyses of the same project recall at most 2 short matching lessons, in the spirit of [agent-brain](https://github.com/Amitro1234/agent-brain-cursor).
 
 ---
 
@@ -78,6 +81,15 @@ pip install -r requirements.txt
 # Start Server
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+To let the code agent read your code, map projects to local checkouts in `.env` (see `.env.example`).
+Keys are a GitHub `owner/repo` or the host of the page you analyze:
+
+```bash
+REPO_PATHS=Amitro123/DevLens-AI=/path/to/DevLens-AI,localhost:3000=/path/to/my-app
+```
+
+The cache and memory live in `~/.codereview-agent/brain.db` (`AGENT_DB_PATH`); set `LLM_CACHE_TTL_HOURS=0` to disable caching.
 
 ### 2. Extension Installation
 1. Go to `chrome://extensions/` and enable **Developer mode**.
