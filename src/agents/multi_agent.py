@@ -1,10 +1,10 @@
 from typing import Any, Optional
 
 from src.agents.llm import LLM
+from src.config import settings
 from src.kb.cache import ResponseCache
 from src.kb.wiki import KnowledgeBase
 
-CI_MODEL = "openai/gpt-oss-120b"
 # CI failures are almost always at the end of the log; keep the tail to bound tokens.
 MAX_LOG_CHARS = 15_000
 
@@ -60,7 +60,7 @@ class MultiAgentAnalyzer:
 
         # kb.fingerprint() moves on every verdict and ingest, so re-analyzing the same log after
         # a 👎 gets a fresh answer instead of the cached wrong one.
-        raw = await self.llm.ask(CI_MODEL, prompt, json_mode=True, cache_on=(prompt, kb.fingerprint()))
+        raw = await self.llm.ask(settings.llm.text_model, prompt, json_mode=True, cache_on=(prompt, kb.fingerprint()))
         result = LLM.parse_json(raw)
 
         if result.get("parse_error"):

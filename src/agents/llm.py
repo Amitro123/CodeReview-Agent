@@ -1,11 +1,14 @@
-"""Groq chat calls shared by the agents: one-shot and tool-calling, both backed by the
-response cache, with a call counter so the cost of a run is visible."""
+"""Chat calls shared by the agents: one-shot and tool-calling, both backed by the
+response cache, with a call counter so the cost of a run is visible.
+
+Uses the OpenAI SDK against whichever OpenAI-compatible provider is configured
+(OpenRouter by default, Groq, or a custom server such as Ollama) - see src/config.py."""
 import asyncio
 import hashlib
 import json
 from typing import Any, Awaitable, Callable, Optional
 
-from groq import Groq
+from openai import OpenAI
 
 from src.config import settings
 from src.kb.cache import ResponseCache
@@ -16,12 +19,21 @@ ToolExecutor = Callable[[str, dict], Awaitable[str]]
 class LLM:
     def __init__(self, cache: ResponseCache, client: Any = None):
         self.cache = cache
-        if client is None and settings.groq_api_key:
-            client = Groq(api_key=settings.groq_api_key)
+        if client is None and (settings.llm.api_key or settings.llm.provider == "custom"):
+            client = OpenAI(
+                base_url=settings.llm.base_url,
+                api_key=settings.llm.api_key or "not-needed",
+                # OpenRouter's optional app attribution header.
+                default_headers={"X-Title": "CodeReview Agent"} if settings.llm.provider == "openrouter" else None,
+            )
         self.client = client
         self.calls = 0
 
     async def _create(self, **kwargs):
+        if settings.llm.provider == "openrouter" and ("tools" in kwargs or "response_format" in kwargs):
+            # Route only to providers that actually support tool calls / JSON mode; by default
+            # OpenRouter may pick one that silently ignores them.
+            kwargs["extra_body"] = {"provider": {"require_parameters": True}}
         self.calls += 1
         print(f"DEBUG: LLM call #{self.calls} -> {kwargs['model']}", flush=True)
         loop = asyncio.get_running_loop()
@@ -37,7 +49,7 @@ class LLM:
         """One-shot call. `cache_on` keys the cache on something other than the full prompt -
         e.g. the prompt without recalled knowledge, which changes as the knowledge base grows."""
         if not self.client:
-            return "Error: Groq client not initialized."
+            return f"Error: no LLM client - set the API key for provider '{settings.llm.provider}'."
         content: Any = prompt
         if image_data_url:
             content = [
@@ -81,7 +93,7 @@ class LLM:
         after that one tool-less JSON call forces a final answer. Pass `cache_extra` only when
         it captures everything the tools can observe (e.g. the repo's git fingerprint)."""
         if not self.client:
-            return "Error: Groq client not initialized."
+            return f"Error: no LLM client - set the API key for provider '{settings.llm.provider}'."
         if cache_extra is not None and (hit := self.cached_tool_answer(model, messages, cache_extra, cache_on)) is not None:
             return hit
         key = self._tool_key(model, messages, cache_extra, cache_on) if cache_extra is not None else None
