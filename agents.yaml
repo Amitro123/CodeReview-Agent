@@ -24,9 +24,11 @@ agents:
     max_turns: 2
   backend:
     description: Reads the server code for the failing API, logic or data.
-    model: code
+    # Tracing bad data through handler -> data access -> seed data takes more steps and more
+    # careful reasoning than the other agents need; see the smoke test in the README.
+    model: openai/gpt-5.4
     tools: [repo, kb, page_errors, browser]
-    max_turns: 4
+    max_turns: 6
   ci:
     description: Reads the failing pipeline steps and logs, then the code they point at.
     model: code
