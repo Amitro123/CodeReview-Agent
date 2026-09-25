@@ -209,7 +209,7 @@ To give Claude Code or Cursor the same knowledge, register the KB server in the 
 | Fix plan, verification, routing, graph | 0 |
 | Learning from a 👍/👎 | 1, in the background |
 
-In the smoke test below, a whole analysis took 3-5 model calls and 5-13 seconds. Repeats are served from the cache
+In the smoke test below, a whole analysis took 3-4 model calls and 8-14 seconds. Repeats are served from the cache
 in `~/.codereview-agent/cache` (`LLM_CACHE_TTL_HOURS=0` disables it).
 
 ---
@@ -244,12 +244,13 @@ run's summary. Latest run:
 
 | Scenario | Routed to | Method | Calls | Time | Real cause found? |
 |---|---|---|---|---|---|
-| Pay button does nothing | ✅ frontend 100% | Jev | 3 | 6.4s | ✅ `handlePay` vs `handlePayment` in `static/checkout.js` |
-| Orders page 2 returns 500 | ✅ backend 100% | Jev | 5 | 12.6s | ❌ read `api/orders.py` and `api/db.py`, used its 4 tool turns before `api/seed.py` (legacy orders with numeric `customer_id` → `KeyError`) and blamed list slicing |
-| Azure DevOps unit tests fail | ✅ ci | CI page | 3 | 5.1s | ✅ discount applied twice in `shop/totals.py` |
+| Pay button does nothing | ✅ frontend 100% | Jev | 4 | 13.0s | ✅ `handlePay` vs `handlePayment` in `static/checkout.js` |
+| Orders page 2 returns 500 | ✅ backend 100% | Jev | 3 | 13.6s | ✅ followed `api/orders.py` → `api/db.py` → `api/seed.py`: legacy orders have a numeric `customer_id`, customers are keyed by `"c-N"` → `KeyError` |
+| Azure DevOps unit tests fail | ✅ ci | CI page | 4 | 7.8s | ✅ discount applied twice in `shop/totals.py` |
 
-All with `google/gemini-2.5-flash` for every agent. The backend miss is the known gap: more tool turns or a
-stronger `backend` model in `agents.yaml` are the levers.
+Models: the backend agent runs on `openai/gpt-5.4` with 6 tool turns (`agents.yaml`) - it also writes the code
+part of frontend fix plans; everything else on `google/gemini-2.5-flash`. With `gemini-2.5-flash` and 4 turns the
+backend agent stopped at `api/db.py` and blamed list slicing, which is why it got the stronger model.
 
 It fails on errors (HTTP, crashes, unparseable answers), not on an unexpected route - that's what it reports.
 
