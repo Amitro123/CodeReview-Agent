@@ -28,6 +28,12 @@ class Settings(BaseModel):
     perplexity: PerplexitySettings = Field(default_factory=PerplexitySettings)
     github: GitHubSettings = Field(default_factory=GitHubSettings)
     groq_api_key: str = Field(default=os.getenv("GROQ_API_KEY", "").strip('"'), description="Groq API Key")
+    # Must be a vision-capable Groq model. Check https://console.groq.com/docs/models
+    # for the current list - Groq renames/retires preview models periodically.
+    groq_vision_model: str = Field(
+        default=os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.6-27b").strip('"'),
+        description="Groq vision-capable model used to analyze screenshots",
+    )
 
     def validate_config(self):
         """Manually trigger validation for critical components."""
@@ -36,16 +42,49 @@ class Settings(BaseModel):
         return True
 
 from pathlib import Path
+from urllib.parse import urlparse
 
-PROJECT_ROOTS = [
-    Path.home() / ".gemini/antigravity/scratch/CodeReview-Agent",
-    Path.home() / ".gemini/antigravity/scratch/project-rules-generator"
-]
 
-def find_repo_root(path_hint: str = "."):
-    for root in PROJECT_ROOTS:
-        if root.exists():
-            return root
-    return Path(path_hint).absolute()
+def _parse_repo_paths(raw: str) -> dict[str, Path]:
+    """Parses REPO_PATHS="owner/repo=/path,localhost:3000=/other/path" into {key: Path}."""
+    mapping = {}
+    for entry in raw.split(","):
+        if "=" not in entry:
+            continue
+        key, path = entry.split("=", 1)
+        if key.strip() and path.strip():
+            mapping[key.strip().lower()] = Path(path.strip()).expanduser()
+    return mapping
+
+
+REPO_PATHS = _parse_repo_paths(os.getenv("REPO_PATHS", ""))
+
+
+def resolve_local_repo(repo_hint: Optional[str], page_url: Optional[str] = None) -> Optional[Path]:
+    """Maps what the extension sends to a local checkout, or None if there isn't one.
+
+    The extension's `repo` is `owner/repo` from a GitHub URL (or a route segment on other
+    sites), not a filesystem path, so it only resolves through REPO_PATHS - keyed by
+    `owner/repo` or by the page's host (e.g. `localhost:3000` for a local dev server) -
+    or when the hint already is an existing local directory.
+    """
+    if page_url:
+        host = urlparse(page_url).netloc.lower()
+        mapped = REPO_PATHS.get(host)
+        if mapped and mapped.is_dir():
+            return mapped.resolve()
+    if repo_hint:
+        mapped = REPO_PATHS.get(repo_hint.strip().lower())
+        if mapped and mapped.is_dir():
+            return mapped.resolve()
+        candidate = Path(repo_hint).expanduser()
+        if candidate.is_dir():
+            return candidate.resolve()
+    return None
+
+
+def find_repo_root(path_hint: str = ".") -> Path:
+    """Where to read local git state / save analysis files; falls back to the backend's cwd."""
+    return resolve_local_repo(path_hint) or Path.cwd()
 
 settings = Settings()

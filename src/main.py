@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException
@@ -95,21 +96,56 @@ async def get_local_diff(path: str = ".", api_key: str = Header(None)):
         "resolved_path": str(repo_path)
     }
 
+BROWSER_TOOL_TIMEOUT_SECONDS = 8.0
+
+
+async def request_browser_tool(websocket: WebSocket, pending: list, tool: str, args: dict) -> str:
+    """Asks the extension to run `tool` on the analyzed tab and waits for its tool_result.
+
+    The main loop isn't reading the socket while an analysis runs, so this reads it here;
+    pings are answered and any other message is queued in `pending` for the main loop.
+    """
+    request_id = os.urandom(4).hex()
+    await websocket.send_json({"type": "tool_request", "id": request_id, "tool": tool, "args": args})
+
+    async def wait_for_result():
+        while True:
+            message = json.loads(await websocket.receive_text())
+            if message.get("type") == "tool_result" and message.get("id") == request_id:
+                result = message.get("result", "")
+                return result if isinstance(result, str) else json.dumps(result)
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "status": "active"})
+            elif message.get("type") != "tool_result":
+                pending.append(message)
+
+    try:
+        return await asyncio.wait_for(wait_for_result(), BROWSER_TOOL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        return f"Error: the browser did not answer {tool} within {BROWSER_TOOL_TIMEOUT_SECONDS:.0f}s"
+
+
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print(">>> BACKEND BOOTED - LISTENING FOR CONNECTIONS <<<", flush=True)
     print(f"DEBUG: WebSocket correlation ID: {os.urandom(4).hex()}", flush=True)
     print(f"DEBUG: WebSocket connection established from {websocket.client}", flush=True)
+    pending: list = []
     try:
         while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+            if pending:
+                message = pending.pop(0)
+            else:
+                message = json.loads(await websocket.receive_text())
             msg_type = message.get("type")
             print(f"DEBUG: WebSocket Received -> {msg_type}", flush=True)
             
             if msg_type == "ping":
                 await websocket.send_json({"type": "pong", "status": "active"})
+                continue
+            if msg_type == "tool_result":
+                # A browser tool answer that arrived after its request timed out.
                 continue
 
             # API Key fallback logic
@@ -184,40 +220,46 @@ async def websocket_endpoint(websocket: WebSocket):
             
             elif message.get("type") == "universal_analyze":
                 from src.agents.universal_agent import UniversalAgent
-                query = message.get("query")
+                query = message.get("query") or ""
                 screenshot = message.get("screenshot")
-                dom = message.get("dom")
+                dom = message.get("dom") or {}
                 repo = message.get("repo", ".")
-                
+                page_url = dom.get("url")
+
                 try:
                     analyzer = UniversalAgent()
                     network_errors = message.get("network_errors", [])
                     console_errors = message.get("console_errors", [])
-                    
+
                     print(f"DEBUG: Starting Universal Analysis for query: {query}", flush=True)
                     print(f"DEBUG: Network Errors: {len(network_errors)}, Console Errors: {len(console_errors)}", flush=True)
 
-                    # 1. Visual Analysis
+                    async def browser_tool(name: str, args: dict) -> str:
+                        return await request_browser_tool(websocket, pending, name, args)
+
+                    # 1. Visual Analysis (may inspect the live page through the extension)
                     await websocket.send_json({"type": "status", "message": "Analyzing Visual Context..."})
-                    ui_analysis = await analyzer.visual_agent(screenshot, query, dom, network_errors, console_errors)
-                    
-                    # 2. Code Analysis
+                    ui_analysis = await analyzer.visual_agent(
+                        screenshot, query, dom, network_errors, console_errors, browser_tool=browser_tool
+                    )
+
+                    # 2. Code Analysis + fix plan (reads the local repo through MCP when mapped)
                     await websocket.send_json({"type": "status", "message": "Reviewing Codebase..."})
-                    code_analysis = await analyzer.code_agent(repo, ui_analysis, dom.get("selectedElement", {}))
-                    
-                    # 3. Integration
-                    await websocket.send_json({"type": "status", "message": "Brainstorming Solutions..."})
+                    code_analysis = await analyzer.code_agent(
+                        repo, ui_analysis, dom.get("selectedElement") or {}, query=query, page_url=page_url
+                    )
+
+                    # 3. Render, remember, save and trigger IDE (no LLM calls)
                     fix_plan = await analyzer.integrator(ui_analysis, code_analysis)
-                    
-                    # 4. Save and Trigger IDE
-                    await websocket.send_json({"type": "status", "message": "Finalizing Fix Plan..."})
+                    analyzer.record_run(query, repo, page_url, code_analysis, network_errors, console_errors)
                     md_path = analyzer.save_universal_mds(fix_plan, query, repo, network_errors, console_errors, screenshot)
                     await trigger_ide_agent(fix_plan)
-                    
+                    print(f"DEBUG: Universal Analysis done with {analyzer.llm.calls} LLM call(s)", flush=True)
+
                     await websocket.send_json({
                         "type": "analysis_result",
                         "answer": f"Universal Fix Plan Ready!\n\nUser Query: {query}\n\nFiles saved: {md_path}\n\nPlan:\n{fix_plan}",
-                        "metadata": {"source": "groq_universal_agent"}
+                        "metadata": {"source": "groq_universal_agent", "llm_calls": analyzer.llm.calls}
                     })
                 except Exception as e:
                     await websocket.send_json({"type": "error", "message": f"Universal Analysis error: {str(e)}"})

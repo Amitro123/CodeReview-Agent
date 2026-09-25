@@ -14,10 +14,13 @@
 - 🔍 **Smart Analysis**: Leverage Perplexity's `sonar-huge` model for deep semantic code reviews.
 - ⚡ **Real-time Interaction**: Bi-directional streaming via WebSockets for zero-latency feedback.
 - 🏗️ **Autonomous Scrape**: Automatically navigate GitHub Actions, scrape logs, and identify root causes.
-- 📸 **High-Fidelity Screenshots**: Uses local Puppeteer service for pixel-perfect captures.
+- 📸 **Native Screenshots**: Captures exactly what you see in your logged-in tab via `chrome.tabs.captureVisibleTab`, analyzed directly by a Groq vision model.
 - 🛠️ **DevTools Integration**: Captures Network (4xx/5xx) and Console errors for deeper context.
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
-- 🛠️ **MCP Ready**: Built-in support for Model Context Protocol to connect with your local toolchain.
+- 🛠️ **Real MCP Tool Use**: The code agent runs an actual MCP server (`src/repo_tools`), sandboxed to your repo, giving it `list_files`/`read_file`/`search_code` tools instead of guessing file names from a prompt.
+- 🔎 **Live Page Inspection**: The visual agent can call `inspect_element` on your open tab (computed styles, hidden/covered state, size) when the screenshot isn't enough.
+- 💸 **Few LLM Calls**: A page analysis is 2 calls plus one per tool turn (tool turns are capped: 2 for the visual agent, 4 for the code agent); the fix plan is written by the code agent, so there's no separate integration call. CI analysis is 1 call. Repeats are served from a SQLite cache, keyed on the repo's git state so code changes invalidate it.
+- 🧠 **Memory**: Every run is stored as a lesson (root cause, fix, files). Later analyses of the same project recall at most 2 short matching lessons, in the spirit of [agent-brain](https://github.com/Amitro1234/agent-brain-cursor).
 
 ---
 
@@ -69,10 +72,7 @@ The agent is equipped with specialized skills to maintain this codebase:
 
 ## 💻 Getting Started
 
-### 1. Backend & Screenshot Service
-You need to run both the Python backend and the Node.js screenshot service.
-
-**Terminal 1 (Backend):**
+### 1. Backend
 ```bash
 # Clone & Install
 git clone https://github.com/Amitro123/CodeReview-Agent.git
@@ -82,15 +82,14 @@ pip install -r requirements.txt
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-**Terminal 2 (Screenshot Service):**
-```bash
-# Install Dependencies
-npm install
+To let the code agent read your code, map projects to local checkouts in `.env` (see `.env.example`).
+Keys are a GitHub `owner/repo` or the host of the page you analyze:
 
-# Start Service
-node screenshot-server.js
+```bash
+REPO_PATHS=Amitro123/DevLens-AI=/path/to/DevLens-AI,localhost:3000=/path/to/my-app
 ```
-*Listens on `http://localhost:3001`*
+
+The cache and memory live in `~/.codereview-agent/brain.db` (`AGENT_DB_PATH`); set `LLM_CACHE_TTL_HOURS=0` to disable caching.
 
 ### 2. Extension Installation
 1. Go to `chrome://extensions/` and enable **Developer mode**.

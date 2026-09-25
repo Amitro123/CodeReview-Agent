@@ -12,22 +12,10 @@ Follow these steps to fully utilize the **Multi-Agent CI Analyzer** and **Univer
     > [!NOTE]
     > You should see `Application startup complete.` and your first `ping` messages once the extension connects.
 
-## 2. Start the Screenshot Service (The "Lens")
-1.  Open a **second** terminal.
-2.  Install dependencies (only once):
-    ```bash
-    npm install
-    ```
-3.  Start the service:
-    ```bash
-    node screenshot-server.js
-    ```
-    > [!IMPORTANT]
-    > This service must be running for high-quality screenshots and visual analysis.
-
----
-
-## 3. Load/Update the Extension (The "Eyes")
+## 2. Load/Update the Extension (The "Eyes")
+Screenshots are captured natively by the extension itself (`chrome.tabs.captureVisibleTab`) -
+no separate screenshot service is needed. This captures exactly what you see in your
+logged-in tab, and the image is sent straight to the Groq vision model for analysis.
 If you have made code changes or I have just fixed a bug in the extension:
 1.  Open Chrome and navigate to `chrome://extensions`.
 2.  Enable **Developer Mode** (top right toggle).
@@ -36,7 +24,7 @@ If you have made code changes or I have just fixed a bug in the extension:
 
 ---
 
-## 4. Connect & Analyze
+## 3. Connect & Analyze
 1.  **Open the Popup**: Click the CodeReview Agent icon in your browser toolbar.
 2.  **Settings Tab**:
     - Ensure **Backend URL** is `ws://localhost:8000`.

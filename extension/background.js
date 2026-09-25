@@ -32,6 +32,44 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     }
 });
 
+// Captures exactly what the user sees in their logged-in tab (native Chrome
+// API) - unlike html2canvas (fails on iframes/CORS) or a headless browser
+// hitting the URL fresh (which would just see a login wall).
+function captureScreenshot(windowId) {
+    return new Promise((resolve) => {
+        chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (dataUrl) => {
+            if (chrome.runtime.lastError) {
+                console.warn("captureVisibleTab failed:", chrome.runtime.lastError.message);
+                resolve(null);
+                return;
+            }
+            resolve(dataUrl || null);
+        });
+    });
+}
+
+// Tab the current universal analysis is about; the backend's visual agent can inspect it.
+let analysisTabId = null;
+
+// Runs a backend tool_request (e.g. inspect_element) in the analyzed tab's content
+// script and sends the answer back as a tool_result with the same id.
+async function handleToolRequest(request) {
+    let result;
+    try {
+        if (analysisTabId === null) throw new Error("no page is being analyzed");
+        result = await chrome.tabs.sendMessage(analysisTabId, {
+            action: "run_tool",
+            tool: request.tool,
+            args: request.args || {}
+        });
+    } catch (e) {
+        result = `Error: ${e.message}`;
+    }
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "tool_result", id: request.id, result: result ?? "" }));
+    }
+}
+
 function attachDebugger(tabId) {
     return new Promise((resolve, reject) => {
         chrome.debugger.attach({ tabId: tabId }, "1.3", () => {
@@ -90,6 +128,9 @@ function initSocket(url) {
                 currentStatus = data.message; // Update current status
                 chrome.runtime.sendMessage({ action: "status_update", text: data.message });
             }
+            if (data.type === 'tool_request') {
+                handleToolRequest(data);
+            }
         };
 
         socket.onclose = () => {
@@ -140,7 +181,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         getSocket().then(s => {
             if (s && s.readyState === WebSocket.OPEN) {
                 chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-                    const tabId = tabs[0]?.id;
+                    const tab = tabs[0];
+                    const tabId = tab?.id;
+                    analysisTabId = tabId ?? null;
+                    const screenshot = tab ? await captureScreenshot(tab.windowId) : null;
+
                     if (tabId) {
                         if (!tabErrors[tabId]) tabErrors[tabId] = { network: [], console: [] };
                         // Ensure debugger is attached and logs are flushed
@@ -154,7 +199,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             s.send(JSON.stringify({
                                 type: "universal_analyze",
                                 query: request.query,
-                                screenshot: request.screenshot,
+                                screenshot: screenshot,
                                 dom: request.dom,
                                 repo: request.repo,
                                 api_key: result.perplexityApiKey,
@@ -169,7 +214,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                             s.send(JSON.stringify({
                                 type: "universal_analyze",
                                 query: request.query,
-                                screenshot: request.screenshot,
+                                screenshot: screenshot,
                                 dom: request.dom,
                                 repo: request.repo,
                                 api_key: result.perplexityApiKey,
@@ -191,11 +236,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         getSocket().then(s => {
             if (s && s.readyState === WebSocket.OPEN) {
                 console.log("Sending ci_analyze to backend...");
+                // No screenshot here: the backend's ci_analyze handler only
+                // reads ci_log/repo (text-only CI log analysis), so capturing
+                // one would just ship sensitive tab content for nothing.
                 chrome.storage.sync.get(['perplexityApiKey'], (result) => {
                     s.send(JSON.stringify({
                         type: "ci_analyze",
                         ci_log: request.ci_log,
-                        screenshot: request.screenshot,
                         repo: request.repo,
                         api_key: result.perplexityApiKey
                     }));
