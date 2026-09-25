@@ -281,19 +281,18 @@ pytest tests/           # 61 tests, no network: scripted models, mocked Jev and 
 *Smoke test (real models)* workflow on PRs that touch the backend and on demand, with the `OPENROUTER_API_KEY`
 repository secret. Bugs in a generated fixture project go through the whole flow - a frontend one, a backend one
 (also a second time with a customer email in the error, which must come out 🔒 sensitive) and a failed Azure DevOps
-run; the results land in the run's summary. Run with DeepSeek V4 Pro as the regular model (now GPT-5.4 Mini):
+run; the results land in the run's summary. Latest run:
 
 | Scenario | Routed to | Sensitive | Model | Calls | Time | Real cause found? |
 |---|---|---|---|---|---|---|
-| Pay button does nothing | ✅ frontend 100% (Jev) | - (Jev 3%) | `deepseek/deepseek-v4-pro` | 6 | 52.0s | ✅ `handlePay` vs `handlePayment` in `static/checkout.js` |
-| Orders page 2 returns 500 | ✅ backend 100% (Jev) | - (Jev 4%) | `deepseek/deepseek-v4-pro` | 7 | 153.4s | ✅ legacy orders in `api/seed.py` have a numeric `customer_id`, customers are keyed by `"c-N"` → `KeyError` |
-| Same, with a customer email in the error | ✅ backend 100% (Jev) | 🔒 found email | `openai/gpt-5.4` | 4 | 21.0s | ✅ same cause, via `api/orders.py` → `api/db.py` → `api/seed.py` |
-| Azure DevOps unit tests fail | ✅ ci (CI page) | - | `deepseek/deepseek-v4-pro` | 5 | 26.9s | ✅ discount applied twice in `shop/totals.py` |
+| Pay button does nothing | ✅ frontend 100% (Jev) | - (Jev 3%) | `openai/gpt-5.4-mini` | 4 | 9.2s | ✅ `handlePay` vs `handlePayment` in `static/checkout.js` |
+| Orders page 2 returns 500 | ✅ backend 100% (Jev) | - (Jev 4%) | `openai/gpt-5.4-mini` | 4 | 9.1s | ✅ legacy orders in `api/seed.py` have a `customer_id` missing from `db.customers` → `KeyError` |
+| Same, with a customer email in the error | ✅ backend 100% (Jev) | 🔒 found email | `openai/gpt-5.4` | 4 | 16.3s | ✅ same cause, via `api/orders.py` → `api/db.py` → `api/seed.py` |
+| Azure DevOps unit tests fail | ✅ ci (CI page) | - | `openai/gpt-5.4-mini` | 3 | 5.5s | ✅ discount applied twice in `shop/totals.py` |
 
-The frontend row's model is the one that wrote the code part of the plan (the page itself was read with
-`VISION_MODEL`). DeepSeek V4 Pro found every cause but was the slowest model tested (up to ~2.5 minutes for the
-backend bug, which it solved in 31s in the comparison below), so the regular model is now `openai/gpt-5.4-mini`:
-it found the cause in the comparison, fastest, at a similar price. An earlier wording of Jev's sensitivity question asked about sensitive *topics* and flagged these
+No run needed the GPT-5.4 fallback. The frontend row's model is the one that wrote the code part of the plan (the
+page itself is read with `VISION_MODEL`). DeepSeek V4 Pro, the previous regular model, also found every cause but
+took up to ~2.5 minutes. An earlier wording of Jev's sensitivity question asked about sensitive *topics* and flagged these
 ordinary bugs at 72-89%; asked about sensitive *values*, it gives 3-8% and the email is caught by the patterns.
 
 With `gemini-2.5-flash` and 4 turns the backend agent stopped at `api/db.py` and blamed list slicing, which is why
