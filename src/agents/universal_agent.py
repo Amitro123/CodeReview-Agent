@@ -6,6 +6,7 @@ from src.config import resolve_local_repo, settings
 from src.agents.mcp_tools import KB_SERVER, REPO_SERVER, ToolBox
 from src.kb.cache import ResponseCache, repo_fingerprint
 from src.kb.wiki import KnowledgeBase, error_signature
+from src.verify import CHECKS_CONTRACT_HELP, describe, normalize_checks
 
 CODE_MODEL = "openai/gpt-oss-20b"
 TEXT_MODEL = "openai/gpt-oss-120b"
@@ -36,9 +37,26 @@ Respond with ONLY a single JSON object (no markdown fences, no text outside the 
   "root_cause": string,        // clear explanation of the root cause
   "fix_checklist": string[],   // concrete steps to fix it
   "ide_instructions": string,  // exactly what an IDE agent needs to do
-  "files": string[]            // repo-relative paths involved in the fix
+  "files": string[],           // repo-relative paths involved in the fix
+  """ + CHECKS_CONTRACT_HELP.strip() + """
 }
 """
+
+PAGE_ERRORS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "page_errors",
+        "description": (
+            "The analyzed page's console errors/warnings and failed (4xx/5xx) network requests, as "
+            "captured by DevTools. Optionally filtered by a substring of the message or URL."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"filter": {"type": "string", "description": "Optional substring to filter by"}},
+        },
+    },
+}
+MAX_PAGE_ERRORS = 20
 
 INSPECT_ELEMENT_TOOL = {
     "type": "function",
@@ -127,7 +145,9 @@ class UniversalAgent:
         return LLM.parse_json(raw)
 
     async def code_agent(self, repo: str, ui_analysis: Dict[str, Any], selected_element: Dict[str, Any],
-                         query: str = "", page_url: Optional[str] = None) -> Dict[str, Any]:
+                         query: str = "", page_url: Optional[str] = None,
+                         browser_tool: Optional[ToolExecutor] = None,
+                         network_errors: Optional[list] = None, console_errors: Optional[list] = None) -> Dict[str, Any]:
         repo_root = resolve_local_repo(repo, page_url)
         kb = KnowledgeBase.for_project(repo, page_url)
         knowledge = kb.recall(" ".join([query, ui_analysis.get("summary", ""), *map(str, ui_analysis.get("findings", []))]))
@@ -152,7 +172,27 @@ class UniversalAgent:
         if knowledge:
             servers.append((KB_SERVER, {"MCP_KB_ROOT": str(kb.base)}))
             instructions.append("Use query_kb/get_page when the wiki map lists a page that looks relevant.")
-        if servers:
+
+        # Browser-facing tools answered in-process: inspect_element goes to the extension over
+        # the websocket, page_errors from the errors the extension already sent.
+        local_tools: dict[str, tuple[dict, ToolExecutor]] = {}
+        if browser_tool:
+            local_tools["inspect_element"] = (INSPECT_ELEMENT_TOOL, browser_tool)
+            instructions.append(
+                "Use inspect_element on the live page when a computed style, hidden/covered state or exact "
+                "text decides between explanations - and to pick selectors for verification_checks."
+            )
+        errors = {"console": console_errors or [], "network": network_errors or []}
+        if errors["console"] or errors["network"]:
+            async def page_errors(name: str, args: dict) -> str:
+                needle = str(args.get("filter", "")).lower()
+                matching = {kind: [e for e in items if needle in json.dumps(e).lower()][:MAX_PAGE_ERRORS]
+                            for kind, items in errors.items()}
+                return json.dumps(matching)
+            local_tools["page_errors"] = (PAGE_ERRORS_TOOL, page_errors)
+            instructions.append("Use page_errors for the raw console and failed-network errors.")
+
+        if servers or local_tools:
             instructions.append(
                 f"You have at most {CODE_TOOL_TURNS} tool turns, so batch independent calls into one turn."
             )
@@ -175,6 +215,9 @@ class UniversalAgent:
         3. Resolve open_questions you can answer; leave only what's still unknown.
         4. Include relevant Network/Console errors in root_cause only if they relate to the user's request.
         5. Write the final fix plan (root_cause, fix_checklist, ide_instructions, files).
+        6. Write verification_checks: concrete checks on the live page that fail now and will pass once
+           the bug is fixed (use selectors you actually saw in the DOM context or via inspect_element).
+           They are run automatically after the fix, without you.
         """
 
         # The tools read the repo and the wiki, so a cached answer is only valid while neither
@@ -185,15 +228,21 @@ class UniversalAgent:
         cache_extra = ("code", str(repo_root), repo_state, kb_state) if repo_state else None
 
         raw = None
-        if servers:
+        if servers or local_tools:
             messages = [{"role": "user", "content": prompt}]
             if cache_extra:
                 raw = self.llm.cached_tool_answer(CODE_MODEL, messages, cache_extra)
             if raw is None:
                 try:
                     async with ToolBox(servers) as toolbox:
+                        async def call_tool(name: str, args: dict) -> str:
+                            if name in local_tools:
+                                return await local_tools[name][1](name, args)
+                            return await toolbox.call(name, args)
+
+                        tools = toolbox.tools + [spec for spec, _ in local_tools.values()]
                         raw = await self.llm.ask_with_tools(
-                            CODE_MODEL, messages, toolbox.tools, toolbox.call, CODE_TOOL_TURNS, cache_extra,
+                            CODE_MODEL, messages, tools, call_tool, CODE_TOOL_TURNS, cache_extra,
                         )
                 except Exception as e:
                     # MCP servers unavailable (e.g. failed to start) - fall back to prompt-only
@@ -201,7 +250,9 @@ class UniversalAgent:
                     print(f"DEBUG: code_agent - tools unavailable ({e}), falling back to prompt-only", flush=True)
         if raw is None or raw.startswith("Error:"):
             raw = await self.llm.ask(CODE_MODEL, prompt, json_mode=True, cache_on=(prompt, kb_state))
-        return LLM.parse_json(raw)
+        result = LLM.parse_json(raw)
+        result["verification_checks"] = normalize_checks(result.get("verification_checks"))
+        return result
 
     async def integrator(self, ui_analysis: Dict[str, Any], code_analysis: Dict[str, Any]) -> str:
         """Renders the fix plan as markdown. No LLM call: the code agent already wrote the plan."""
@@ -217,6 +268,9 @@ class UniversalAgent:
             sections.append("## Files\n" + "\n".join(f"- `{f}`" for f in code_analysis["files"]))
         if code_analysis.get("ide_instructions"):
             sections.append(f"## For the IDE Agent\n{code_analysis['ide_instructions']}")
+        if code_analysis.get("verification_checks"):
+            sections.append("## How to verify\nAfter applying the fix, press **Verify fix** - these are checked on the page:\n"
+                            + "\n".join(f"- {describe(c)}" for c in code_analysis["verification_checks"]))
         if code_analysis.get("open_questions"):
             sections.append("## Open Questions\n" + "\n".join(f"- {q}" for q in code_analysis["open_questions"]))
         return "\n\n".join(sections) + "\n"

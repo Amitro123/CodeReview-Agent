@@ -156,6 +156,35 @@ async def request_browser_tool(websocket: WebSocket, pending: list, tool: str, a
         return f"Error: the browser did not answer {tool} within {BROWSER_TOOL_TIMEOUT_SECONDS:.0f}s"
 
 
+async def verify_fix(websocket: WebSocket, pending: list, message: dict) -> dict:
+    """Re-checks a run's verification_checks on the (reloaded) page: element checks through
+    inspect_element round trips, error checks against the errors captured after reload.
+    No LLM call. The result is stored with the run as evidence; the verdict stays the user's."""
+    from src.kb.wiki import KnowledgeBase
+    from src.verify import describe, element_selectors, evaluate
+
+    run_ref = message.get("run_ref") or {}
+    kb = KnowledgeBase.for_project(run_ref.get("repo"), run_ref.get("page_url"))
+    run = kb.load_run(run_ref.get("run_id", ""))
+    checks = run.get("verification_checks") or []
+    if not checks:
+        return {"type": "verification_result", "run_id": run["run_id"], "passed": False, "results": [],
+                "message": "This fix plan has no browser checks to run."}
+
+    inspections = {}
+    for selector in element_selectors(checks):
+        answer = await request_browser_tool(websocket, pending, "inspect_element", {"selector": selector})
+        try:
+            inspections[selector] = json.loads(answer)
+        except ValueError:
+            inspections[selector] = answer  # "No elements match ..." / "Error: ..."
+    result = evaluate(checks, inspections, message.get("console_errors", []), message.get("network_errors", []))
+    kb.record_verification(run["run_id"], result)
+    for item in result["results"]:
+        item["label"] = describe(item["check"])
+    return {"type": "verification_result", "run_id": run["run_id"], **result}
+
+
 @app.websocket("/ws/chat")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -177,6 +206,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
             if msg_type == "tool_result":
                 # A browser tool answer that arrived after its request timed out.
+                continue
+            if msg_type == "verify":
+                try:
+                    await websocket.send_json(await verify_fix(websocket, pending, message))
+                except (ValueError, OSError) as e:
+                    await websocket.send_json({"type": "error", "message": f"Verification failed: {e}"})
                 continue
             if msg_type == "feedback":
                 try:
@@ -283,7 +318,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     # 2. Code Analysis + fix plan (reads the local repo through MCP when mapped)
                     await websocket.send_json({"type": "status", "message": "Reviewing Codebase..."})
                     code_analysis = await analyzer.code_agent(
-                        repo, ui_analysis, dom.get("selectedElement") or {}, query=query, page_url=page_url
+                        repo, ui_analysis, dom.get("selectedElement") or {}, query=query, page_url=page_url,
+                        browser_tool=browser_tool, network_errors=network_errors, console_errors=console_errors,
                     )
 
                     # 3. Render, remember, save and trigger IDE (no LLM calls)

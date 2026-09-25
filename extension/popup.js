@@ -232,6 +232,63 @@ function escapeHtml(text) {
 
 // Status element per run id, updated when the backend confirms the feedback was saved.
 const feedbackStatus = {};
+// Result list per run id, filled when a "Verify fix" re-check comes back.
+const verifyResults = {};
+
+// Re-runs the plan's browser checks after the user applied the fix: the tab is reloaded
+// and each check passes or fails with no LLM call. Evidence only - the verdict stays 👍/👎.
+function addVerifyControls(box, runRef) {
+    const button = document.createElement('button');
+    button.className = 'feedback-btn verify-btn';
+    button.textContent = '🔍 Verify fix';
+
+    const results = document.createElement('ul');
+    results.className = 'verify-results';
+    verifyResults[runRef.run_id] = { list: results, button };
+
+    button.addEventListener('click', () => {
+        button.disabled = true;
+        results.replaceChildren();
+        const pending = document.createElement('li');
+        pending.textContent = 'Reloading the page and re-checking…';
+        results.appendChild(pending);
+        chrome.runtime.sendMessage({ action: "verify_fix", runRef }, (response) => {
+            if (!response || response.status !== 'sent') {
+                pending.textContent = `Could not verify: ${response?.message || 'backend not connected'}`;
+                button.disabled = false;
+            }
+        });
+    });
+    box.append(button, results);
+}
+
+function showVerification(result) {
+    const target = verifyResults[result.run_id];
+    if (!target) return;
+    target.button.disabled = false;
+    const items = [];
+    if (result.message) {
+        const li = document.createElement('li');
+        li.textContent = result.message;
+        items.push(li);
+    }
+    for (const r of result.results || []) {
+        const li = document.createElement('li');
+        li.className = r.ok ? 'check-ok' : 'check-fail';
+        const actual = typeof r.actual === 'string' ? r.actual : JSON.stringify(r.actual);
+        li.textContent = `${r.ok ? '✓' : '✗'} ${r.label} (now: ${actual})`;
+        items.push(li);
+    }
+    if ((result.results || []).length) {
+        const summary = document.createElement('li');
+        summary.className = 'verify-summary';
+        summary.textContent = result.passed
+            ? 'All checks passed. If the bug is gone, confirm with 👍.'
+            : 'Some checks still fail.';
+        items.push(summary);
+    }
+    target.list.replaceChildren(...items);
+}
 
 // 👍/👎 under a result. The verdict is what turns a run into knowledge: it's logged to
 // MISTAKES.md and the run is ingested into the project wiki. Not saved in chat history,
@@ -277,6 +334,7 @@ function addFeedbackControls(runRef) {
     }
 
     box.append(question, ...buttons, note, status);
+    addVerifyControls(box, runRef);
     chatHistory.appendChild(box);
     chatHistory.scrollTop = chatHistory.scrollHeight;
 }
@@ -294,6 +352,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     if (request.action === "status_update") {
         showThinkingBubble(request.text);
+    }
+    if (request.action === "verification_result") {
+        showVerification(request.result);
     }
     if (request.action === "feedback_saved") {
         const status = feedbackStatus[request.runId];

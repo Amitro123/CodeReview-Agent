@@ -124,6 +124,9 @@ function initSocket(url) {
                 currentStatus = null; // Clear status on completion
                 chrome.runtime.sendMessage({ action: "analysis_result", text: data.answer, runRef: data.run_ref || null });
             }
+            if (data.type === 'verification_result') {
+                chrome.runtime.sendMessage({ action: "verification_result", result: data });
+            }
             if (data.type === 'feedback_saved') {
                 chrome.runtime.sendMessage({ action: "feedback_saved", runId: data.run_id, duplicate: !!data.duplicate });
             }
@@ -178,7 +181,52 @@ setInterval(async () => {
 
 connect(); // Initial connection
 
+// Reloads a tab and resolves once it has finished loading, plus a short settle time for
+// late scripts and requests (or after 20s if it never completes).
+function reloadAndWait(tabId) {
+    return new Promise((resolve) => {
+        const onUpdated = (id, info) => {
+            if (id === tabId && info.status === 'complete') {
+                chrome.tabs.onUpdated.removeListener(onUpdated);
+                clearTimeout(timer);
+                setTimeout(resolve, 1500);
+            }
+        };
+        const timer = setTimeout(() => {
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+            resolve();
+        }, 20000);
+        chrome.tabs.onUpdated.addListener(onUpdated);
+        chrome.tabs.reload(tabId);
+    });
+}
+
+// "Verify fix": reload the page with fresh error capture, then let the backend re-run the
+// fix plan's browser checks (it inspects elements through tool_requests to this tab).
+async function verifyFix(runRef) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error("no active tab to verify");
+    const s = await getSocket();
+    if (!s || s.readyState !== WebSocket.OPEN) throw new Error("backend not connected");
+    analysisTabId = tab.id;
+    await attachDebugger(tab.id);
+    tabErrors[tab.id] = { network: [], console: [] };
+    await reloadAndWait(tab.id);
+    s.send(JSON.stringify({
+        type: "verify",
+        run_ref: runRef,
+        console_errors: tabErrors[tab.id].console,
+        network_errors: tabErrors[tab.id].network
+    }));
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === "verify_fix") {
+        verifyFix(request.runRef)
+            .then(() => sendResponse({ status: "sent" }))
+            .catch((e) => sendResponse({ status: "error", message: e.message }));
+        return true;
+    }
     if (request.action === "send_feedback") {
         getSocket().then(s => {
             if (s && s.readyState === WebSocket.OPEN) {
