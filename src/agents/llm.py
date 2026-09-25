@@ -44,15 +44,22 @@ class LLM:
         self.calls = 0
         # Token and cost totals for this instance's calls; cost is what OpenRouter reports (USD).
         self.usage = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+        # Sensitive runs: OpenRouter only routes to providers that don't store or train on prompts.
+        self.private = False
 
     async def _create(self, **kwargs):
         if settings.llm.provider == "openrouter":
             # Report each call's cost in the response's usage.
             extra: dict = {"usage": {"include": True}}
+            provider: dict = {}
             if "tools" in kwargs or "response_format" in kwargs:
                 # Route only to providers that actually support tool calls / JSON mode; by
                 # default OpenRouter may pick one that silently ignores them.
-                extra["provider"] = {"require_parameters": True}
+                provider["require_parameters"] = True
+            if self.private:
+                provider["data_collection"] = "deny"
+            if provider:
+                extra["provider"] = provider
             kwargs["extra_body"] = extra
         self.calls += 1
         print(f"DEBUG: LLM call #{self.calls} -> {kwargs['model']}", flush=True)

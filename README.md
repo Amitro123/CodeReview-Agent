@@ -18,6 +18,10 @@
   by [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev), a model that returns calibrated
   probabilities instead of text, through OpenRouter with the same key. The side panel shows the decision
   ("Routed to: Backend 92%") and lets you re-run with another agent. See [Routing](#-routing).
+- 🔒 **Sensitive data stays on the trusted model**: problems from projects you mark sensitive, or whose evidence
+  holds secrets or personal data, or that Jev flags, run on `openai/gpt-5.4` with no-data-collection providers; the
+  rest run on the cheaper `deepseek/deepseek-v4-pro`. Secrets are redacted before classification. See
+  [Sensitive data](#-sensitive-data).
 - 📸 **Sees what you see**: screenshots are captured natively from your logged-in tab
   (`chrome.tabs.captureVisibleTab`) and analyzed by a vision model - only when the problem is visual.
 - 🔎 **Live page inspection**: agents call `inspect_element` on your open tab through the extension (computed
@@ -95,8 +99,12 @@ That one key covers the agents' models **and** the Jev classifier. See [Configur
 
 ### 3. Use it
 
-- **On any page**: type what's wrong ("the orders list shows an error") and press Enter. Hovering an element first
-  points the agents at it.
+Nothing runs on its own: **you start an analysis from the side panel** when you see a problem, in your own words -
+there's no special command. The router decides who investigates.
+
+- **On any page**: type what's wrong ("the orders list shows an error on page 2", "clicking Pay does nothing") and
+  press Enter. Hovering an element first points the agents at it. The extension adds the screenshot, the page's
+  console and network errors and the element; you don't need to describe those.
 - **On a failed CI run** (Azure DevOps `…/_build/results?buildId=…` or GitHub `…/actions/runs/…`): click **CI Logs**
   or just ask.
 - Under the result: **👍 / 👎** (with an optional note on the real cause), **Verify fix**, and
@@ -119,8 +127,9 @@ problem ──> signals ──────> classifier ────────�
 - **Signals** (`src/router/signals.py`, no LLM): only the evidence, compacted - console errors, failed requests
   (status + path), your question, the selected element, the CI run's failed steps, and what the knowledge base
   verified before for the same errors. No screenshot: Jev doesn't take images.
-- **Classify** (`src/router/classifier.py`): one System One call answers three typed questions -
-  `category` (a probability per category), `needs_browser` and `enough_evidence` (yes/no probabilities).
+- **Classify** (`src/router/classifier.py`): one System One call answers four typed questions -
+  `category` (a probability per category), `needs_browser`, `enough_evidence` and `sensitive_data` (yes/no
+  probabilities).
   A failed CI run's page skips this and goes straight to the CI agent.
 - **Decide** (`src/router/policy.py`, in code): one agent at ≥ 85%; two when the top two together reach it (the
   frontend agent first, handing its JSON findings on); otherwise the side panel asks you to pick.
@@ -130,19 +139,41 @@ problem ──> signals ──────> classifier ────────�
   `python -m src.kb.cli calibration <kb_dir>` shows accuracy against confidence per bucket - whether "90%" really
   is right 90% of the time on *your* projects.
 
-Each agent's model, tools and turn cap live in [`agents.yaml`](agents.yaml) - e.g. put a stronger model on the
-backend agent only:
+Each agent's model, sensitive model, tools and turn cap live in [`agents.yaml`](agents.yaml):
 
-```yaml
-agents:
-  backend:
-    model: anthropic/claude-sonnet-4.5   # or "code" = CODE_MODEL from .env
-    tools: [repo, kb, page_errors, browser]
-    max_turns: 4
-```
+| Agent | Model | When sensitive | Tools | Max turns |
+|---|---|---|---|---|
+| frontend | `vision` (= `VISION_MODEL`, Gemini 2.5 Flash) | `openai/gpt-5.4` | browser, page_errors | 2 |
+| backend | `deepseek/deepseek-v4-pro` | `openai/gpt-5.4` | repo, kb, page_errors, browser | 6 |
+| ci | `deepseek/deepseek-v4-pro` | `openai/gpt-5.4` | repo, kb | 4 |
+| config_env | `deepseek/deepseek-v4-pro` | `openai/gpt-5.4` | repo, kb, page_errors | 3 |
+
+The code part of a frontend fix plan is written with the backend agent's model and tools. `model` takes a role
+alias (`vision` / `code` / `text`, from `.env`) or any model id on your provider.
 
 Without OpenRouter, set `TYPESAFE_API_KEY` to call Jev directly; with neither, one LLM call classifies instead and
 its probabilities are marked as uncalibrated.
+
+## 🔒 Sensitive data
+
+A problem is sensitive when any of these holds (`src/router/sensitivity.py`), checked in this order:
+
+1. **Project**: it's listed under `sensitivity.projects` in `agents.yaml` (`owner/repo`, `org/project/repo` or a
+   host). The most reliable signal for the code itself, which the agents only read after routing:
+   ```yaml
+   sensitivity:
+     projects: [acme/Billing/billing-api, admin.acme.io]
+     threshold: 0.5
+   ```
+2. **Pattern** (no LLM): the evidence holds API keys, bearer tokens, JWTs, `PASSWORD=`/`SECRET=` values, email
+   addresses or card numbers (Luhn-checked). These are **redacted** before the classifier sees the evidence.
+3. **Jev**: the classifier's `sensitive_data` probability reaches `threshold` (payments, customer or health data,
+   credentials, confidential logic).
+
+A sensitive run uses each agent's `sensitive_model` and sends OpenRouter `provider.data_collection: "deny"`, so it's
+only routed to providers that don't store or train on prompts. The side panel shows it
+("… · 🔒 sensitive (found email)") and the run records why. The agents still see your code and the real (unredacted)
+errors - that's what they need to find the bug.
 
 ## 🏭 CI failures
 
@@ -204,7 +235,7 @@ To give Claude Code or Cursor the same knowledge, register the KB server in the 
 |---|---|
 | Classification | 1 Jev call (fractions of a cent), or 1 LLM call without Jev; none on a CI run page or after you pick |
 | Frontend agent | 1 + one per tool turn (max 2) |
-| Code / backend / config agent | 1 + one per tool turn (max 4, per `agents.yaml`) |
+| Backend / config agent | 1 + one per tool turn (max 6 / 3, per `agents.yaml`) |
 | CI agent | 1 + one per tool turn (max 4) |
 | Fix plan, verification, routing, graph | 0 |
 | Learning from a 👍/👎 | 1, in the background |
@@ -234,13 +265,15 @@ in `~/.codereview-agent/cache` (`LLM_CACHE_TTL_HOURS=0` disables it).
 ## 🧪 Testing
 
 ```bash
-pytest tests/           # 53 tests, no network: scripted models, mocked Jev and MCP over stdio
+pytest tests/           # 62 tests, no network: scripted models, mocked Jev and MCP over stdio
 ```
 
 **Smoke test on real models** - [`scripts/smoke_test.py`](scripts/smoke_test.py), run by the
 *Smoke test (real models)* workflow on PRs that touch the backend and on demand, with the `OPENROUTER_API_KEY`
-repository secret. Three bugs in a generated fixture project go through the whole flow; the results land in the
-run's summary. Latest run:
+repository secret. Bugs in a generated fixture project go through the whole flow - a frontend one, a backend one
+(also a second time with a customer email in the error, which must come out 🔒 sensitive) and a failed Azure DevOps
+run; the results land in the run's summary. Run with GPT-5.4 on the backend agent, before the DeepSeek /
+sensitive split:
 
 | Scenario | Routed to | Method | Calls | Time | Real cause found? |
 |---|---|---|---|---|---|
@@ -248,18 +281,17 @@ run's summary. Latest run:
 | Orders page 2 returns 500 | ✅ backend 100% | Jev | 3 | 13.6s | ✅ followed `api/orders.py` → `api/db.py` → `api/seed.py`: legacy orders have a numeric `customer_id`, customers are keyed by `"c-N"` → `KeyError` |
 | Azure DevOps unit tests fail | ✅ ci | CI page | 4 | 7.8s | ✅ discount applied twice in `shop/totals.py` |
 
-Models: the backend agent runs on `openai/gpt-5.4` with 6 tool turns (`agents.yaml`) - it also writes the code
-part of frontend fix plans; everything else on `google/gemini-2.5-flash`. With `gemini-2.5-flash` and 4 turns the
-backend agent stopped at `api/db.py` and blamed list slicing, which is why it got the stronger model.
+With `gemini-2.5-flash` and 4 turns the backend agent stopped at `api/db.py` and blamed list slicing, which is why
+the code-reading agents moved to stronger models.
 
 **Backend model comparison** (same orders bug, backend agent only, 6 tool turns; one run each, so treat it as a
 first signal, not a benchmark; cost as reported by OpenRouter):
 
 | Model | Real cause found | Calls | Cost | Time |
 |---|---|---|---|---|
-| `openai/gpt-5.4` (current) | ✅ | 4 | $0.0274 | 13.0s |
+| `openai/gpt-5.4` (sensitive runs) | ✅ | 4 | $0.0274 | 13.0s |
 | `openai/gpt-5.4-mini` | ✅ | 5 | $0.0083 | 10.6s |
-| `deepseek/deepseek-v4-pro` | ✅ | 4 | $0.0105 | 31.0s |
+| `deepseek/deepseek-v4-pro` (default) | ✅ | 4 | $0.0105 | 31.0s |
 | `~deepseek/deepseek-pro-latest` | ✅ | 7 | $0.0171 | 20.3s |
 | `~deepseek/deepseek-v4-flash-latest` | ✅ | 6 | $0.0023 | 135.2s |
 | `google/gemini-2.5-flash` | ❌ blamed list slicing | 4 | $0.0029 | 13.3s |
@@ -267,7 +299,8 @@ first signal, not a benchmark; cost as reported by OpenRouter):
 Re-run it from Actions → *Smoke test (real models)* → **Run workflow** (manual runs only, so PR pushes
 don't pay for it; about $0.07 per run). All of the testing above cost $0.29 on OpenRouter.
 
-It fails on errors (HTTP, crashes, unparseable answers), not on an unexpected route - that's what it reports.
+It fails on errors (HTTP, crashes, unparseable answers) and on a wrong sensitive decision (a privacy bug), not on
+an unexpected category - that's what it reports.
 
 ---
 
@@ -276,7 +309,7 @@ It fails on errors (HTTP, crashes, unparseable answers), not on an unexpected ro
 ```
 extension/            Chrome MV3 side panel: capture, DevTools errors, inspect_element, CI API readers
 src/main.py           FastAPI + websocket (/ws/chat): analyze, feedback, verify, browser tool round trips
-src/router/           signals, classifier (Jev / LLM), policy (agents.yaml), pipeline
+src/router/           signals, classifier (Jev / LLM), sensitivity, policy (agents.yaml), pipeline
 src/agents/           visual + code agents, CI agent, LLM client with the bounded tool loop, MCP toolbox
 src/repo_tools/       MCP server: list_files / read_file / search_code, sandboxed to the repo
 src/kb/               knowledge base: raw runs, wiki, graph, MISTAKES.md, KB MCP server, CLI

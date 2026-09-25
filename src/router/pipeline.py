@@ -15,6 +15,7 @@ from src.kb.cache import ResponseCache
 from src.kb.wiki import KnowledgeBase
 from src.router.classifier import CATEGORIES, Classification, Classifier
 from src.router.policy import FOCUS, Route, RoutingConfig, decide, load_config
+from src.router.sensitivity import find_sensitive, project_is_sensitive, redact
 from src.router.signals import build_state, detect_source, error_text
 
 CI_SOURCES = ("azure_devops", "github_actions")
@@ -29,7 +30,8 @@ async def _no_status(_: str) -> None:
 def describe_route(c: Classification, route: Route) -> str:
     how = {"jev": "Jev", "llm": "LLM estimate, not calibrated", "source": "CI run page", "user": "your choice"}[c.method]
     agents = " → ".join(LABELS[x] for x in route.categories) or "none yet"
-    return f"Routed to: {agents} ({LABELS[c.category]} {c.confidence:.0%}, {how})"
+    text = f"Routed to: {agents} ({LABELS[c.category]} {c.confidence:.0%}, {how})"
+    return text + (f" · 🔒 sensitive ({route.sensitive_reason})" if route.sensitive else "")
 
 
 class RoutedAnalysis:
@@ -57,15 +59,25 @@ class RoutedAnalysis:
     async def classify(self, request: dict) -> tuple[Classification, Route]:
         page_url = request.get("page_url") or (request.get("dom") or {}).get("url")
         forced = request.get("force_category")
+        kb = KnowledgeBase.for_project(request.get("repo"), page_url)
+        state = build_state(request, kb.category_prior(error_text(request)))
+        # Secrets and personal data in the evidence make the run sensitive, and never reach the classifier.
+        found = find_sensitive(state)
         if forced in CATEGORIES:
             c = Classification.certain(forced, "user")
         elif detect_source(page_url) in CI_SOURCES and request.get("ci"):
             # A failed pipeline run page: there is nothing to decide.
             c = Classification.certain("ci", "source")
         else:
-            kb = KnowledgeBase.for_project(request.get("repo"), page_url)
-            c = await self.classifier.classify(build_state(request, kb.category_prior(error_text(request))))
+            c = await self.classifier.classify(redact(state) if found else state)
         route = Route([c.category], False, "") if c.method in ("user", "source") else decide(c, self.config)
+
+        if project_is_sensitive(self.config.sensitive_projects, request.get("repo"), page_url):
+            route.sensitive, route.sensitive_reason = True, "project marked sensitive"
+        elif found:
+            route.sensitive, route.sensitive_reason = True, "found " + ", ".join(found)
+        elif (c.sensitive_data or 0) >= self.config.sensitive_threshold:
+            route.sensitive, route.sensitive_reason = True, f"classifier: sensitive data {c.sensitive_data:.0%}"
         return c, route
 
     async def run(self, request: dict, c: Classification, route: Route,
@@ -76,7 +88,10 @@ class RoutedAnalysis:
         page_url = request.get("page_url") or dom.get("url")
         network_errors = request.get("network_errors") or []
         console_errors = request.get("console_errors") or []
-        record = {**c.to_dict(), "agents": route.categories, "overrides": request.get("overrides_run")}
+        sensitive = route.sensitive
+        self.agent.llm.private = self.ci_agent.llm.private = sensitive
+        record = {**c.to_dict(), "agents": route.categories, "overrides": request.get("overrides_run"),
+                  "sensitive": sensitive, "sensitive_reason": route.sensitive_reason}
         focus = "; ".join(FOCUS[x] for x in route.categories)
         agents = self.config.agents
 
@@ -85,7 +100,7 @@ class RoutedAnalysis:
             await status("CI agent: reading the failed steps...")
             result = await self.ci_agent.analyze_ci_failure(
                 request.get("ci_log") or (request.get("ci") or {}).get("log") or "", repo, ci=request.get("ci"), query=query, page_url=page_url,
-                model=profile.model_id(), tools=set(profile.tools), max_turns=profile.max_turns,
+                model=profile.model_id(sensitive), tools=set(profile.tools), max_turns=profile.max_turns,
                 focus=focus if len(route.categories) > 1 else "", route=record,
             )
             return {"plan": result["solution"], "run_id": result["run_id"], "files": list(result["files"].values()),
@@ -97,7 +112,9 @@ class RoutedAnalysis:
         if "frontend" in route.categories or wants_page:
             profile = agents["frontend"]
             await status("Frontend agent: looking at the page...")
-            model = profile.model_id() if (screenshot or profile.model != "vision") else None
+            # Without a screenshot the "vision" alias falls back to the text model (None).
+            explicit = profile.model != "vision" or (sensitive and profile.sensitive_model)
+            model = profile.model_id(sensitive) if (screenshot or explicit) else None
             ui_analysis = await self.agent.visual_agent(
                 screenshot, query, dom, network_errors, console_errors,
                 browser_tool=browser_tool if profile.uses("browser") else None,
@@ -112,7 +129,7 @@ class RoutedAnalysis:
         code_analysis = await self.agent.code_agent(
             repo, ui_analysis, dom.get("selectedElement") or {}, query=query, page_url=page_url,
             browser_tool=browser_tool, network_errors=network_errors, console_errors=console_errors,
-            model=profile.model_id(), tools=set(profile.tools), max_turns=profile.max_turns, focus=focus,
+            model=profile.model_id(sensitive), tools=set(profile.tools), max_turns=profile.max_turns, focus=focus,
         )
         plan = await self.agent.integrator(ui_analysis, code_analysis)
         run_id = self.agent.record_run(query, repo, page_url, code_analysis, network_errors, console_errors,
@@ -137,5 +154,7 @@ def route_message(c: Classification, route: Route) -> dict:
                 f"Not sure where this is ({route.reason}). Pick where to look:",
         "labels": LABELS,
         "notes": c.notes,
+        "sensitive": route.sensitive,
+        "sensitive_reason": route.sensitive_reason,
         "provider": settings.llm.provider,
     }

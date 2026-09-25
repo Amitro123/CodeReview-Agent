@@ -32,11 +32,13 @@ class AgentProfile:
     tools: list[str] = field(default_factory=list)
     max_turns: int = 4
     description: str = ""
+    sensitive_model: str = ""    # used instead of `model` when the problem is sensitive
 
-    def model_id(self) -> str:
+    def model_id(self, sensitive: bool = False) -> str:
         """Role aliases resolve to the configured models; anything else is a model id."""
+        chosen = self.sensitive_model if sensitive and self.sensitive_model else self.model
         return {"vision": settings.llm.vision_model, "code": settings.llm.code_model,
-                "text": settings.llm.text_model}.get(self.model, self.model)
+                "text": settings.llm.text_model}.get(chosen, chosen)
 
     def uses(self, tool: str) -> bool:
         return tool in self.tools
@@ -47,6 +49,8 @@ class RoutingConfig:
     agents: dict[str, AgentProfile]
     single_agent_threshold: float = 0.85
     second_agent_min: float = 0.2
+    sensitive_projects: list[str] = field(default_factory=list)
+    sensitive_threshold: float = 0.5
 
 
 DEFAULT_AGENTS = {
@@ -72,10 +76,14 @@ def load_config(path: Optional[Path] = None) -> RoutingConfig:
             raise ValueError(f"{path}: agent {name!r} has unknown tools {sorted(unknown)}")
         agents[name] = AgentProfile(name, str(spec.get("model", agents[name].model)), tools,
                                     int(spec.get("max_turns", agents[name].max_turns)),
-                                    str(spec.get("description", "")))
+                                    str(spec.get("description", "")),
+                                    str(spec.get("sensitive_model", agents[name].sensitive_model) or ""))
     routing = raw.get("routing") or {}
+    sensitivity = raw.get("sensitivity") or {}
     return RoutingConfig(agents, float(routing.get("single_agent_threshold", 0.85)),
-                         float(routing.get("second_agent_min", 0.2)))
+                         float(routing.get("second_agent_min", 0.2)),
+                         [str(p) for p in (sensitivity.get("projects") or [])],
+                         float(sensitivity.get("threshold", 0.5)))
 
 
 @dataclass
@@ -83,9 +91,12 @@ class Route:
     categories: list[str]        # agents to run, in order; empty when asking the user
     ask_user: bool
     reason: str
+    sensitive: bool = False      # run on the agents' sensitive_model, with no data collection
+    sensitive_reason: str = ""
 
     def to_dict(self) -> dict:
-        return {"categories": self.categories, "ask_user": self.ask_user, "reason": self.reason}
+        return {"categories": self.categories, "ask_user": self.ask_user, "reason": self.reason,
+                "sensitive": self.sensitive, "sensitive_reason": self.sensitive_reason}
 
 
 def decide(c: Classification, config: RoutingConfig) -> Route:

@@ -129,6 +129,19 @@ SCENARIOS = [
         },
     },
     {
+        "name": "Orders page 2 fails, customer email in the error",
+        "expected": "backend",
+        "expect_sensitive": True,
+        "request": {
+            "query": "The orders list shows 'Something went wrong' on page 2",
+            "page_url": f"{PAGE}/orders?page=2", "repo": "orders",
+            "dom": {"url": f"{PAGE}/orders?page=2", "pageTitle": "Orders"},
+            "console_errors": [{"level": "error", "text": "Failed to load orders for dana.levi@example.com: 500"}],
+            "network_errors": [{"status": 500, "statusText": "Internal Server Error", "method": "GET",
+                                "url": f"{PAGE}/api/orders?page=2"}],
+        },
+    },
+    {
         "name": "Azure DevOps unit tests fail",
         "expected": "ci",
         "request": {
@@ -185,7 +198,13 @@ async def run_scenarios() -> tuple[list[dict], bool]:
             c, route = await routed.classify(scenario["request"])
             row.update(category=c.category, confidence=c.confidence, method=c.method,
                        probabilities=c.probabilities, needs_browser=c.needs_browser, notes=c.notes,
-                       agents=route.categories, ask_user=route.ask_user)
+                       agents=route.categories, ask_user=route.ask_user, sensitive=route.sensitive,
+                       sensitive_reason=route.sensitive_reason, sensitive_data=c.sensitive_data)
+            lead = (route.categories or [c.category])[-1]
+            profile = routed.config.agents["backend" if lead == "frontend" else lead]
+            row["model"] = profile.model_id(route.sensitive)
+            if bool(scenario.get("expect_sensitive")) != route.sensitive:
+                ok = False  # a missed (or invented) sensitive route is a privacy bug, not a routing miss
             if route.ask_user:
                 # The panel would ask the user; run the classifier's top pick to exercise the agents.
                 c, route = await routed.classify({**scenario["request"], "force_category": c.category})
@@ -263,24 +282,27 @@ def comparison_report(rows: list[dict]) -> str:
 
 def report(rows: list[dict]) -> str:
     lines = ["## Smoke test: routed analysis on real models", "",
-             "| Scenario | Expected | Routed to | Confidence | Method | LLM calls | Jev calls | Time | Root cause | Files |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+             "| Scenario | Expected | Routed to | Confidence | Method | Sensitive | Model | LLM calls | Jev calls | Time | Root cause | Files |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         if "error" in r:
-            lines.append(f"| {cell(r['scenario'])} | {r['expected']} | **error** | | | | | {r['seconds']}s | "
+            lines.append(f"| {cell(r['scenario'])} | {r['expected']} | **error** | | | | | | | {r['seconds']}s | "
                          f"{cell(r['error'], 300)} | |")
             continue
         mark = "✅" if r.get("category") == r["expected"] else "⚠️"
         routed = " → ".join(r.get("agents") or []) or "asked the user"
         lines.append(
             f"| {cell(r['scenario'])} | {r['expected']} | {mark} {routed} | {r.get('confidence', 0):.0%} | "
-            f"{r.get('method')} | {r.get('llm_calls')} | {r.get('jev_calls')} | {r['seconds']}s | "
+            f"{r.get('method')} | {'🔒 ' + cell(r.get('sensitive_reason'), 40) if r.get('sensitive') else '-'} | "
+            f"`{r.get('model')}` | {r.get('llm_calls')} | {r.get('jev_calls')} | {r['seconds']}s | "
             f"{cell(r.get('root_cause'))} | {cell(', '.join(r.get('files') or []), 80)} |")
     lines += ["", "<details><summary>Probabilities</summary>", ""]
     for r in rows:
         if r.get("probabilities"):
             probs = ", ".join(f"{k} {v:.0%}" for k, v in sorted(r["probabilities"].items(), key=lambda kv: -kv[1]))
             extra = f"; needs_browser {r['needs_browser']:.0%}" if r.get("needs_browser") is not None else ""
+            if r.get("sensitive_data") is not None:
+                extra += f"; sensitive_data {r['sensitive_data']:.0%}"
             notes = f"; notes: {'; '.join(r['notes'])}" if r.get("notes") else ""
             lines.append(f"- **{r['scenario']}**: {probs}{extra}{notes}")
     lines += ["", "</details>"]
