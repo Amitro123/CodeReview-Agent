@@ -45,14 +45,25 @@ FIXTURE = {
                     for o in orders[start:start + PAGE_SIZE]]
     """,
     "api/db.py": """
+        from api.seed import CUSTOMERS, ORDERS
+
+
         class Database:
-            def __init__(self, orders, customers):
+            def __init__(self, orders=ORDERS, customers=CUSTOMERS):
                 self.orders = orders
-                # Customers are keyed by their string id, e.g. "c-17".
                 self.customers = {c["id"]: c for c in customers}
 
             def fetch_orders(self):
                 return self.orders
+    """,
+    "api/seed.py": """
+        CUSTOMERS = [{"id": f"c-{n}", "name": f"Customer {n}"} for n in range(1, 6)]
+
+        ORDERS = (
+            [{"id": n, "customer_id": f"c-{n % 5 + 1}", "total": 10 * n} for n in range(1, 21)]
+            # Imported from the legacy shop in March.
+            + [{"id": 20 + n, "customer_id": n, "total": 15 * n} for n in range(1, 6)]
+        )
     """,
     "shop/totals.py": """
         def apply_discount(total: float, percent: float) -> float:
