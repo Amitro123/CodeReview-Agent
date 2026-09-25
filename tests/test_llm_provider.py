@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -74,10 +75,52 @@ def test_openrouter_requires_providers_that_support_tools_and_json(env, monkeypa
     llm = LLM(ResponseCache(str(tmp_path), 0), client)
     asyncio.run(llm.ask("m", "plain", cache=False))
     asyncio.run(llm.ask("m", "as json", json_mode=True, cache=False))
-    assert "extra_body" not in client.requests[0]
-    assert client.requests[1]["extra_body"] == {"provider": {"require_parameters": True}}
+    assert client.requests[0]["extra_body"] == {"usage": {"include": True}}
+    assert client.requests[1]["extra_body"] == {"usage": {"include": True}, "provider": {"require_parameters": True}}
 
     monkeypatch.setattr(llm_module.settings, "llm", env(LLM_PROVIDER="groq", GROQ_API_KEY="k"))
     groq_client = ScriptedGroq([{"json": {"a": 1}}])
     asyncio.run(LLM(ResponseCache(str(tmp_path), 0), groq_client).ask("m", "x", json_mode=True, cache=False))
-    assert "extra_body" not in groq_client.requests[0]  # an OpenRouter-only option
+    assert "extra_body" not in groq_client.requests[0]  # OpenRouter-only options
+
+
+def test_tool_results_are_json_objects_and_prose_answers_get_a_json_retry(tmp_path):
+    client = ScriptedGroq([
+        {"tool_calls": [("read_file", {"path": "tests/test_totals.py"})]},
+        {"text": "The test fails because the discount is applied twice."},  # prose, not the JSON asked for
+        {"json": {"root_cause": "discount applied twice"}},
+    ])
+    llm = LLM(ResponseCache(str(tmp_path), 0), client)
+    file_text = 'assert order_total([{"price": 50, "qty": 2}], discount_percent=10) == 90'
+
+    async def read_file(name, args):
+        return file_text
+    answer = asyncio.run(llm.ask_with_tools("m", [{"role": "user", "content": "find it"}], [], read_file, 4))
+
+    assert json.loads(answer) == {"root_cause": "discount applied twice"}
+    tool_message = next(m for m in client.requests[1]["messages"] if m["role"] == "tool")
+    assert tool_message["name"] == "read_file"
+    assert json.loads(tool_message["content"]) == {"output": file_text}  # the file, not the list inside it
+    assert client.requests[2]["response_format"] == {"type": "json_object"}
+    assert "ONLY the JSON object" in client.requests[2]["messages"][-1]["content"]
+
+
+def test_usage_and_openrouter_cost_are_added_up(tmp_path):
+    class Usage:
+        def __init__(self, prompt, completion, cost):
+            self.prompt_tokens, self.completion_tokens, self.model_extra = prompt, completion, {"cost": cost}
+
+    client = ScriptedGroq([{"json": {"a": 1}}, {"json": {"a": 2}}])
+    original = client.create
+    usages = iter([Usage(1000, 200, 0.0012), Usage(500, 100, 0.0006)])
+
+    def create(**kwargs):
+        completion = original(**kwargs)
+        completion.usage = next(usages)
+        return completion
+    client.create = create
+    llm = LLM(ResponseCache(str(tmp_path), 0), client)
+    asyncio.run(llm.ask("m", "one", cache=False))
+    asyncio.run(llm.ask("m", "two", cache=False))
+    assert llm.usage["input_tokens"] == 1500 and llm.usage["output_tokens"] == 300
+    assert round(llm.usage["cost"], 6) == 0.0018

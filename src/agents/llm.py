@@ -16,6 +16,20 @@ from src.kb.cache import ResponseCache
 ToolExecutor = Callable[[str, dict], Awaitable[str]]
 
 
+def tool_content(result: str) -> str:
+    """A tool result as a JSON object. Some providers (Gemini, through OpenRouter) need a
+    function response to be an object and try to parse a bare string as JSON - a file that
+    happens to contain `[{"price": 50}]` then reaches the model as that list, not as the file."""
+    return json.dumps({"output": result}, ensure_ascii=False)
+
+
+def _is_json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 class LLM:
     def __init__(self, cache: ResponseCache, client: Any = None):
         self.cache = cache
@@ -28,16 +42,47 @@ class LLM:
             )
         self.client = client
         self.calls = 0
+        # Token and cost totals for this instance's calls; cost is what OpenRouter reports (USD).
+        self.usage = {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+        # Sensitive runs: OpenRouter only routes to providers that don't store or train on prompts.
+        self.private = False
+        # Names of the tools the model called, in order - what a run actually looked at.
+        self.tool_calls: list[str] = []
 
     async def _create(self, **kwargs):
-        if settings.llm.provider == "openrouter" and ("tools" in kwargs or "response_format" in kwargs):
-            # Route only to providers that actually support tool calls / JSON mode; by default
-            # OpenRouter may pick one that silently ignores them.
-            kwargs["extra_body"] = {"provider": {"require_parameters": True}}
+        if settings.llm.provider == "openrouter":
+            # Report each call's cost in the response's usage.
+            extra: dict = {"usage": {"include": True}}
+            provider: dict = {}
+            if "tools" in kwargs or "response_format" in kwargs:
+                # Route only to providers that actually support tool calls / JSON mode; by
+                # default OpenRouter may pick one that silently ignores them.
+                provider["require_parameters"] = True
+            if self.private:
+                provider["data_collection"] = "deny"
+            if provider:
+                extra["provider"] = provider
+            kwargs["extra_body"] = extra
         self.calls += 1
         print(f"DEBUG: LLM call #{self.calls} -> {kwargs['model']}", flush=True)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: self.client.chat.completions.create(**kwargs))
+        completion = await loop.run_in_executor(None, lambda: self.client.chat.completions.create(**kwargs))
+        self._add_usage(getattr(completion, "usage", None))
+        return completion
+
+    def _add_usage(self, usage: Any) -> None:
+        if usage is None:
+            return
+        self.usage["input_tokens"] += int(getattr(usage, "prompt_tokens", 0) or 0)
+        self.usage["output_tokens"] += int(getattr(usage, "completion_tokens", 0) or 0)
+        # OpenRouter adds the call's cost to the usage object; other providers don't.
+        cost = getattr(usage, "cost", None)
+        if cost is None:
+            cost = (getattr(usage, "model_extra", None) or {}).get("cost")
+        try:
+            self.usage["cost"] += float(cost or 0)
+        except (TypeError, ValueError):
+            pass
 
     def _key(self, model: str, messages: Any, extra: tuple) -> str:
         # Screenshots are large data URLs; key on their hash rather than the raw bytes.
@@ -117,11 +162,20 @@ class LLM:
                         args = json.loads(tc.function.arguments or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    print(f"DEBUG: tool call {tc.function.name} {json.dumps(args)[:200]}", flush=True)
+                    self.tool_calls.append(tc.function.name)
                     try:
                         result = await tool_executor(tc.function.name, args)
                     except Exception as e:
                         result = f"Error calling {tc.function.name}: {e}"
-                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.function.name,
+                                     "content": tool_content(result)})
+            if answer is not None and not _is_json_object(answer):
+                # The model stopped calling tools but answered in prose; ask once more, in JSON mode.
+                messages.append({"role": "assistant", "content": answer})
+                messages.append({"role": "user", "content": "Now respond with ONLY the JSON object in the "
+                                                            "shape specified at the start - no other text."})
+                answer = None
             if answer is None:
                 completion = await self._create(
                     messages=messages, model=model, response_format={"type": "json_object"}

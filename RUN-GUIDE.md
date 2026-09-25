@@ -28,11 +28,14 @@ If you have made code changes or I have just fixed a bug in the extension:
 1.  **Open the Popup**: Click the CodeReview Agent icon in your browser toolbar.
 2.  **Settings Tab**:
     - Ensure **Backend URL** is `ws://localhost:8000`.
-    - The agents use the LLM key from the backend's `.env` (`OPENROUTER_API_KEY` by default), not this panel. The **Perplexity API Key** field is optional and only used by the older URL/log analysis actions.
+    - The agents use the LLM key from the backend's `.env` (`OPENROUTER_API_KEY` by default); the extension holds no keys.
     - Click **Save Settings**. (This establishes the WebSocket connection).
 3.  **Main Tab**:
-    - **Multi-Agent CI**: On a GitHub Actions page, click **Analyze CI Failure**. Look at your terminal to see the agents wake up!
-    - **Universal Chat**: Type any query in the bottom chat box (e.g., *"How does this button work?"*) and press Enter.
+    - **Ask about any page**: type what's wrong in the chat box (e.g. *"the orders list shows an error"*) and press Enter.
+      The panel first shows where the problem was routed (e.g. *Routed to: Backend (Backend 92%, Jev)*), then the fix plan.
+      If the router isn't sure, it asks you to pick; under each result, **Wrong area? Re-run as:** runs another agent.
+    - **Failed CI run**: open the run on Azure DevOps (`.../_build/results?buildId=...`) or GitHub Actions and click
+      **CI Logs** (or just ask). The failing steps and their logs are read from the CI system's API.
 
 ---
 

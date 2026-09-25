@@ -32,7 +32,8 @@ class _Completion:
 class ScriptedGroq:
     """Stands in for the Groq client: replays scripted replies and records every request.
 
-    A reply is {"json": obj} for a final answer or {"tool_calls": [(name, args), ...]}."""
+    A reply is {"json": obj} for a final answer, {"text": str} for a non-JSON one, or
+    {"tool_calls": [(name, args), ...]}."""
 
     def __init__(self, replies):
         self.replies = list(replies)
@@ -45,6 +46,8 @@ class ScriptedGroq:
         if "tool_calls" in reply:
             calls = [_ToolCall(f"call_{i}", name, args) for i, (name, args) in enumerate(reply["tool_calls"])]
             return _Completion(_Message(tool_calls=calls))
+        if "text" in reply:
+            return _Completion(_Message(content=reply["text"]))
         return _Completion(_Message(content=json.dumps(reply["json"])))
 
     def prompt(self, index):

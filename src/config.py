@@ -1,4 +1,8 @@
 import os
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
+
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
@@ -9,19 +13,7 @@ if os.path.exists(env_path):
     print(f"Loaded .env from {env_path}")
 else:
     print(f"No .env found at {env_path}")
-from typing import Optional
 
-class PerplexitySettings(BaseModel):
-    """Configuration for Perplexity API."""
-    api_key: str = Field(default=os.getenv("PERPLEXITY_API_KEY", "").strip('"'), description="Perplexity API Key")
-    model: str = Field(default="sonar-pro", description="Perplexity model to use")
-    timeout_seconds: int = Field(default=30, ge=1, description="Request timeout in seconds")
-    max_retries: int = Field(default=3, ge=0, description="Max retries for failed requests")
-
-class GitHubSettings(BaseModel):
-    """Configuration for GitHub API."""
-    token: str = Field(default=os.getenv("GITHUB_TOKEN", ""), description="GitHub Personal Access Token")
-    watched_repos: list[str] = Field(default_factory=list, description="List of repositories to watch")
 
 def _env(name: str) -> str:
     return os.getenv(name, "").strip().strip('"')
@@ -83,21 +75,14 @@ def load_llm_settings() -> LLMSettings:
 
 class Settings(BaseModel):
     """Global application settings."""
-    perplexity: PerplexitySettings = Field(default_factory=PerplexitySettings)
-    github: GitHubSettings = Field(default_factory=GitHubSettings)
     llm: LLMSettings = Field(default_factory=load_llm_settings)
 
     def validate_config(self):
-        """Warns about missing keys instead of refusing to start: each feature reports its own
-        missing key when used, and the Perplexity-only endpoints shouldn't block the agents."""
+        """Warns about a missing key instead of refusing to start; an analysis reports it too."""
         if not self.llm.api_key and self.llm.provider != "custom":
             print(f"WARNING: no API key for LLM provider '{self.llm.provider}' "
                   f"(set {LLM_PROVIDERS[self.llm.provider][1]}); analyses will fail until it is set.", flush=True)
         return True
-
-from pathlib import Path
-from urllib.parse import urlparse
-
 
 def _parse_repo_paths(raw: str) -> dict[str, Path]:
     """Parses REPO_PATHS="owner/repo=/path,localhost:3000=/other/path" into {key: Path}."""

@@ -327,8 +327,7 @@ body {
     letter-spacing: 0.5px;
 }
 
-.form-input,
-.form-textarea {
+.form-input {
     width: 100%;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -339,11 +338,9 @@ body {
     font-size: 14px;
     outline: none;
     box-sizing: border-box;
-    /* Fix for overflow issue */
 }
 
-.form-input:focus,
-.form-textarea:focus {
+.form-input:focus {
     border-color: var(--accent);
 }
 
@@ -416,4 +413,35 @@ body {
 .verify-results .verify-summary {
     color: var(--text-primary);
     margin-top: 2px;
+}
+
+.route {
+    align-self: flex-start;
+    max-width: 90%;
+    border-left: 2px solid var(--accent);
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+.route-text {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.route-note {
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.route-choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.settings-note {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 0 0 16px;
 }

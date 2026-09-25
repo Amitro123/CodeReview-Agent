@@ -2,6 +2,7 @@
 let socket = null;
 let connectingPromise = null;
 let tabErrors = {}; // { tabId: { network: [], console: [] } }
+let currentStatus = null; // the running analysis' latest status, for a panel opened mid-run
 
 // Open side panel on action click
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => console.error(error));
@@ -116,13 +117,14 @@ function initSocket(url) {
             resolve(socket);
         };
 
-        let currentStatus = null; // Store current analysis status
-
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
             if (data.type === 'analysis_result') {
                 currentStatus = null; // Clear status on completion
                 chrome.runtime.sendMessage({ action: "analysis_result", text: data.answer, runRef: data.run_ref || null });
+            }
+            if (data.type === 'route') {
+                chrome.runtime.sendMessage({ action: "route", route: data });
             }
             if (data.type === 'verification_result') {
                 chrome.runtime.sendMessage({ action: "verification_result", result: data });
@@ -220,6 +222,42 @@ async function verifyFix(runRef) {
     }));
 }
 
+// The last analysis sent, so the panel can re-run it with another agent (the user's pick
+// when the router isn't sure, or a correction when it picked the wrong area).
+let lastAnalysis = null;
+
+// Sends one reported problem to the backend router. On a regular page it also captures the
+// screenshot and the DevTools errors; on a CI run page the failure itself is the evidence.
+async function startAnalysis(request) {
+    const s = await getSocket();
+    if (!s || s.readyState !== WebSocket.OPEN) throw new Error("Backend not connected");
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    analysisTabId = tab ? tab.id : null;
+    const isCiRun = !!request.ci;
+    let screenshot = null;
+    let errors = { network: [], console: [] };
+    if (tab && !isCiRun) {
+        screenshot = await captureScreenshot(tab.windowId);
+        if (!tabErrors[tab.id]) tabErrors[tab.id] = { network: [], console: [] };
+        await attachDebugger(tab.id);
+        // Brief wait for Log history to flush if just attached
+        await new Promise(r => setTimeout(r, 500));
+        errors = tabErrors[tab.id];
+    }
+    lastAnalysis = {
+        type: "analyze",
+        query: request.query,
+        page_url: request.dom ? request.dom.url : null,
+        dom: request.dom,
+        repo: request.repo,
+        ci: request.ci,
+        screenshot,
+        network_errors: errors.network,
+        console_errors: errors.console
+    };
+    s.send(JSON.stringify(lastAnalysis));
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "verify_fix") {
         verifyFix(request.runRef)
@@ -248,127 +286,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         connect(request.backend_url);
         return false;
     }
-    if (request.action === "universal-analyze") {
-        getSocket().then(s => {
-            if (s && s.readyState === WebSocket.OPEN) {
-                chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-                    const tab = tabs[0];
-                    const tabId = tab?.id;
-                    analysisTabId = tabId ?? null;
-                    const screenshot = tab ? await captureScreenshot(tab.windowId) : null;
-
-                    if (tabId) {
-                        if (!tabErrors[tabId]) tabErrors[tabId] = { network: [], console: [] };
-                        // Ensure debugger is attached and logs are flushed
-                        await attachDebugger(tabId);
-                        // Brief wait for Log history to flush if just attached
-                        await new Promise(r => setTimeout(r, 500));
-
-                        currentStatus = "Initializing Agents..."; // Set initial status
-
-                        chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                            s.send(JSON.stringify({
-                                type: "universal_analyze",
-                                query: request.query,
-                                screenshot: screenshot,
-                                dom: request.dom,
-                                repo: request.repo,
-                                api_key: result.perplexityApiKey,
-                                network_errors: tabErrors[tabId].network,
-                                console_errors: tabErrors[tabId].console
-                            }));
-                            sendResponse({ status: "sent" });
-                        });
-                    } else {
-                        // Fallback if no tab found (unlikely)
-                        chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                            s.send(JSON.stringify({
-                                type: "universal_analyze",
-                                query: request.query,
-                                screenshot: screenshot,
-                                dom: request.dom,
-                                repo: request.repo,
-                                api_key: result.perplexityApiKey,
-                                network_errors: [],
-                                console_errors: []
-                            }));
-                            sendResponse({ status: "sent" });
-                        });
-                    }
-                });
-            } else {
-                console.error("universal-analyze failed: Backend not connected");
-                sendResponse({ status: "error", message: "Backend not connected" });
-            }
-        });
-        return true;
-    }
-    if (request.action === "ci-analyze") {
-        getSocket().then(s => {
-            if (s && s.readyState === WebSocket.OPEN) {
-                console.log("Sending ci_analyze to backend...");
-                // No screenshot here: the backend's ci_analyze handler only
-                // reads ci_log/repo (text-only CI log analysis), so capturing
-                // one would just ship sensitive tab content for nothing.
-                chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                    s.send(JSON.stringify({
-                        type: "ci_analyze",
-                        ci_log: request.ci_log,
-                        repo: request.repo,
-                        api_key: result.perplexityApiKey
-                    }));
-                    sendResponse({ status: "sent" });
-                });
-            } else {
-                console.error("ci-analyze failed: Backend not connected");
-                sendResponse({ status: "error", message: "Backend not connected" });
-            }
-        });
-        return true;
-    }
-
     if (request.action === "analyze") {
+        startAnalysis(request)
+            .then(() => sendResponse({ status: "sent" }))
+            .catch((e) => sendResponse({ status: "error", message: e.message }));
+        return true;
+    }
+    if (request.action === "reroute") {
+        if (!lastAnalysis) {
+            sendResponse({ status: "error", message: "nothing to re-run; ask again" });
+            return false;
+        }
         getSocket().then(s => {
-            if (s && s.readyState === WebSocket.OPEN) {
-                chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                    s.send(JSON.stringify({
-                        type: "analyze_url",
-                        url: request.url,
-                        api_key: result.perplexityApiKey
-                    }));
-                    sendResponse({ status: "sent" });
-                });
-            } else {
-                sendResponse({ status: "error", message: "Backend not connected (Socket offline)" });
+            if (!s || s.readyState !== WebSocket.OPEN) {
+                sendResponse({ status: "error", message: "Backend not connected" });
+                return;
             }
+            s.send(JSON.stringify({
+                ...lastAnalysis,
+                force_category: request.category,
+                overrides_run: request.overridesRun || null
+            }));
+            sendResponse({ status: "sent" });
         });
         return true;
-    } else if (request.action === "get_status") {
+    }
+
+    if (request.action === "get_status") {
         sendResponse({ status: currentStatus });
         return false;
-    } else if (request.action === "scrape_github_actions") {
-        chrome.scripting.executeScript({
-            target: { tabId: sender.tab.id },
-            func: () => {
-                const logs = document.querySelector('.log-viewer-container')?.innerText ||
-                    document.querySelector('.highlight.actions-log')?.innerText ||
-                    "No logs found in typical GitHub Actions containers.";
-                return logs;
-            }
-        }).then((results) => {
-            const logs = results[0].result;
-            getSocket().then(s => {
-                if (s && s.readyState === WebSocket.OPEN) {
-                    chrome.storage.sync.get(['perplexityApiKey'], (result) => {
-                        s.send(JSON.stringify({
-                            type: "analyze_logs",
-                            logs: logs,
-                            api_key: result.perplexityApiKey
-                        }));
-                    });
-                }
-            });
-        });
-        return true;
     }
 });

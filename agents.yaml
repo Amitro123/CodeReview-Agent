@@ -1,0 +1,60 @@
+# Which agent handles which kind of problem, and how the router decides.
+# Loaded by src/router/policy.py (override the path with AGENTS_CONFIG).
+#
+# model: "vision" / "code" / "text" use VISION_MODEL / CODE_MODEL / TEXT_MODEL from .env;
+#        anything else is a model id on your provider, e.g. "anthropic/claude-sonnet-4.5".
+# sensitive_model: used instead of `model` when the problem is sensitive (see `sensitivity`).
+# fallback_model: one re-run on this model when the answer isn't good enough - no usable answer,
+#        the agent's own low confidence, or a mapped repo whose code it didn't cite.
+# tools: browser      inspect_element on the live page, through the extension
+#        page_errors  the page's console and failed-network errors
+#        repo         list_files / read_file / search_code on the mapped checkout (MCP)
+#        kb           query_kb / get_page on the project's knowledge base (MCP)
+# max_turns: cap on tool-calling turns before a final answer is forced.
+
+routing:
+  # One agent when the top category is at least this likely.
+  single_agent_threshold: 0.85
+  # Otherwise two agents when the top two together reach the threshold and the second is at
+  # least this likely; below that, the user is asked to pick.
+  second_agent_min: 0.2
+
+# A problem is sensitive when its project is listed here, when its evidence contains secrets or
+# personal data (keys, tokens, emails, card numbers - redacted before classification), or when
+# the classifier's sensitive_data probability reaches the threshold. Sensitive runs use each
+# agent's sensitive_model, and OpenRouter only routes them to providers that don't store or
+# train on the data. List projects as in REPO_PATHS: owner/repo, org/project/repo or a host.
+sensitivity:
+  projects: []
+  threshold: 0.5
+
+agents:
+  frontend:
+    description: Looks at the live page (screenshot + elements), then maps it to the code.
+    model: vision
+    sensitive_model: openai/gpt-5.4
+    tools: [browser, page_errors]
+    max_turns: 2
+  backend:
+    description: Reads the server code for the failing API, logic or data.
+    # gemini-2.5-flash couldn't trace bad data from the handler into the seed data; gpt-5.4-mini
+    # did, fastest and cheapest of the models that did - see the model comparison in the README.
+    model: openai/gpt-5.4-mini
+    sensitive_model: openai/gpt-5.4
+    fallback_model: openai/gpt-5.4
+    tools: [repo, kb, page_errors, browser]
+    max_turns: 6
+  ci:
+    description: Reads the failing pipeline steps and logs, then the code they point at.
+    model: openai/gpt-5.4-mini
+    sensitive_model: openai/gpt-5.4
+    fallback_model: openai/gpt-5.4
+    tools: [repo, kb]
+    max_turns: 4
+  config_env:
+    description: Checks configuration, env vars, permissions and dependency versions.
+    model: openai/gpt-5.4-mini
+    sensitive_model: openai/gpt-5.4
+    fallback_model: openai/gpt-5.4
+    tools: [repo, kb, page_errors]
+    max_turns: 3

@@ -32,3 +32,6 @@ yarn-error.log*
 # OS
 Thumbs.db
 .DS_Store
+
+# Fix plans the agents write into a checkout
+analysis/

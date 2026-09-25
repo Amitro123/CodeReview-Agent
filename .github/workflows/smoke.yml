@@ -1,0 +1,46 @@
+name: Smoke test (real models)
+
+# Runs the routed analysis end to end against OpenRouter (Jev + the agents' models) on a
+# small fixture project. Uses the OPENROUTER_API_KEY repository secret and skips itself
+# when the secret isn't set. Each run makes about a dozen small model calls.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - "src/**"
+      - "agents.yaml"
+      - "requirements.txt"
+      - "scripts/smoke_test.py"
+      - ".github/workflows/smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run smoke test
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Candidates for the backend agent, each run once on the backend scenario. Manual runs
+          # only (Actions -> Smoke test -> Run workflow), so PR pushes don't pay for six extra runs.
+          SMOKE_COMPARE_BACKEND_MODELS: ${{ github.event_name == 'workflow_dispatch' && 'openai/gpt-5.4,openai/gpt-5.4-mini,deepseek/deepseek-v4-pro,~deepseek/deepseek-pro-latest,~deepseek/deepseek-v4-flash-latest,google/gemini-2.5-flash' || '' }}
+        run: python scripts/smoke_test.py
