@@ -16,6 +16,20 @@ from src.kb.cache import ResponseCache
 ToolExecutor = Callable[[str, dict], Awaitable[str]]
 
 
+def tool_content(result: str) -> str:
+    """A tool result as a JSON object. Some providers (Gemini, through OpenRouter) need a
+    function response to be an object and try to parse a bare string as JSON - a file that
+    happens to contain `[{"price": 50}]` then reaches the model as that list, not as the file."""
+    return json.dumps({"output": result}, ensure_ascii=False)
+
+
+def _is_json_object(text: str) -> bool:
+    try:
+        return isinstance(json.loads(text), dict)
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 class LLM:
     def __init__(self, cache: ResponseCache, client: Any = None):
         self.cache = cache
@@ -117,11 +131,19 @@ class LLM:
                         args = json.loads(tc.function.arguments or "{}")
                     except json.JSONDecodeError:
                         args = {}
+                    print(f"DEBUG: tool call {tc.function.name} {json.dumps(args)[:200]}", flush=True)
                     try:
                         result = await tool_executor(tc.function.name, args)
                     except Exception as e:
                         result = f"Error calling {tc.function.name}: {e}"
-                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.function.name,
+                                     "content": tool_content(result)})
+            if answer is not None and not _is_json_object(answer):
+                # The model stopped calling tools but answered in prose; ask once more, in JSON mode.
+                messages.append({"role": "assistant", "content": answer})
+                messages.append({"role": "user", "content": "Now respond with ONLY the JSON object in the "
+                                                            "shape specified at the start - no other text."})
+                answer = None
             if answer is None:
                 completion = await self._create(
                     messages=messages, model=model, response_format={"type": "json_object"}

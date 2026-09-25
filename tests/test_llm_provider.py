@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 
@@ -81,3 +82,24 @@ def test_openrouter_requires_providers_that_support_tools_and_json(env, monkeypa
     groq_client = ScriptedGroq([{"json": {"a": 1}}])
     asyncio.run(LLM(ResponseCache(str(tmp_path), 0), groq_client).ask("m", "x", json_mode=True, cache=False))
     assert "extra_body" not in groq_client.requests[0]  # an OpenRouter-only option
+
+
+def test_tool_results_are_json_objects_and_prose_answers_get_a_json_retry(tmp_path):
+    client = ScriptedGroq([
+        {"tool_calls": [("read_file", {"path": "tests/test_totals.py"})]},
+        {"text": "The test fails because the discount is applied twice."},  # prose, not the JSON asked for
+        {"json": {"root_cause": "discount applied twice"}},
+    ])
+    llm = LLM(ResponseCache(str(tmp_path), 0), client)
+    file_text = 'assert order_total([{"price": 50, "qty": 2}], discount_percent=10) == 90'
+
+    async def read_file(name, args):
+        return file_text
+    answer = asyncio.run(llm.ask_with_tools("m", [{"role": "user", "content": "find it"}], [], read_file, 4))
+
+    assert json.loads(answer) == {"root_cause": "discount applied twice"}
+    tool_message = next(m for m in client.requests[1]["messages"] if m["role"] == "tool")
+    assert tool_message["name"] == "read_file"
+    assert json.loads(tool_message["content"]) == {"output": file_text}  # the file, not the list inside it
+    assert client.requests[2]["response_format"] == {"type": "json_object"}
+    assert "ONLY the JSON object" in client.requests[2]["messages"][-1]["content"]
