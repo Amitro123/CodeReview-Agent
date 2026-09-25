@@ -167,8 +167,12 @@ class LLMClassifier:
             except (KeyError, TypeError, ValueError):
                 return None
 
-        return Classification(top, confidence, probabilities, number("needs_browser"), number("enough_evidence"),
-                              calibrated=False, method="llm", model=self.model)
+        result = Classification(top, confidence, probabilities, number("needs_browser"), number("enough_evidence"),
+                                calibrated=False, method="llm", model=self.model)
+        if not data:
+            # An even split here means the call failed, not that the model is unsure.
+            result.notes.append(f"LLM classifier failed: {raw[:120]}")
+        return result
 
 
 def _env(name: str) -> str:

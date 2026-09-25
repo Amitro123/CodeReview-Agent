@@ -143,6 +143,12 @@ def test_falls_back_to_the_llm_when_jev_fails(tmp_path):
     assert "Categories:" in client.prompt(0)
 
 
+def test_a_failed_llm_classification_says_so(tmp_path):
+    llm = LLM(ResponseCache(str(tmp_path), 1), None)  # no client: every call returns "Error: ..."
+    result = asyncio.run(Classifier(llm, use_env=False).classify({"user_query": "q"}))
+    assert result.confidence == 0.25 and "LLM classifier failed: Error:" in result.notes[0]
+
+
 def test_routing_policy():
     config = load_config()
 

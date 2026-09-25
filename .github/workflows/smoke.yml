@@ -1,0 +1,43 @@
+name: Smoke test (real models)
+
+# Runs the routed analysis end to end against OpenRouter (Jev + the agents' models) on a
+# small fixture project. Uses the OPENROUTER_API_KEY repository secret and skips itself
+# when the secret isn't set. Each run makes about a dozen small model calls.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - "src/**"
+      - "agents.yaml"
+      - "requirements.txt"
+      - "scripts/smoke_test.py"
+      - ".github/workflows/smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run smoke test
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python scripts/smoke_test.py
