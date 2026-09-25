@@ -297,6 +297,21 @@ ordinary bugs at 72-89%; asked about sensitive *values*, it gives 3-8% and the e
 With `gemini-2.5-flash` and 4 turns the backend agent stopped at `api/db.py` and blamed list slicing, which is why
 the code-reading agents moved to stronger models.
 
+**Learning from a 👎** (same run): a bug whose cause is outside the code - the external fx-service returns exchange
+rates rounded to 2 decimals - analyzed with an empty wiki, then a 👎 with the real cause, one ingest, and a
+*different* symptom of the same cause:
+
+| Step | Result |
+|---|---|
+| 1. "Cart totals are a few cents off for EUR" (empty wiki) | ❌ blamed rounding each cart line separately |
+| 2. 👎 + note → `MISTAKES.md` | ✅ |
+| 3. Ingest → wiki | 1 page: `issues/eur-cart-rounding` |
+| 4. Recall for the next problem | ✅ matched |
+| 5. "Confirmation emails show GBP totals slightly wrong" (with the wiki) | ✅ "a low-precision FX rate from `fx-service`" |
+
+The agent got it from the recalled page in its prompt; it didn't need the `query_kb` / `get_page` tools. One run,
+so a first signal; the smoke test repeats it on every backend change.
+
 **Backend model comparison** (same orders bug, backend agent only, 6 tool turns; one run each, so treat it as a
 first signal, not a benchmark; cost as reported by OpenRouter):
 
