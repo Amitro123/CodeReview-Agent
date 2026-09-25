@@ -18,7 +18,8 @@
 - 🛠️ **DevTools Integration**: Captures Network (4xx/5xx) and Console errors for deeper context.
 - 🔒 **Secure-First**: API keys are stored in `chrome.storage.sync` and never persisted on the backend.
 - 🛠️ **Real MCP Tool Use**: The code agent runs an actual MCP server (`src/repo_tools`), sandboxed to your repo, giving it `list_files`/`read_file`/`search_code` tools instead of guessing file names from a prompt.
-- 🔎 **Live Page Inspection**: The visual agent can call `inspect_element` on your open tab (computed styles, hidden/covered state, size) when the screenshot isn't enough.
+- 🔎 **Live Page Inspection**: Both agents can call `inspect_element` on your open tab (computed styles, hidden/covered state, size) through the extension, and the code agent can pull the page's raw console/network errors - no Anthropic subscription or other browser agent needed.
+- ✅ **Verify Fix**: Each fix plan comes with concrete browser checks. After you apply the fix, **Verify fix** reloads the page and re-runs them with no LLM call; the result is stored with the run and fed to the knowledge base as evidence (your 👍/👎 stays the verdict).
 - 💸 **Few LLM Calls**: A page analysis is 2 calls plus one per tool turn (tool turns are capped: 2 for the visual agent, 4 for the code agent); the fix plan is written by the code agent, so there's no separate integration call. CI analysis is 1 call. Repeats are served from a file cache, keyed on the repo's git state and the knowledge base's state, so a code change or a new 👍/👎 invalidates it.
 - 🧠 **Knowledge Base**: Every analysis is recorded; your 👍/👎 on a fix goes to `MISTAKES.md` ([agent-brain](https://github.com/Amitro1234/agent-brain-cursor) format) and is ingested into a per-project wiki with a link graph (see [Knowledge base](#-knowledge-base)).
 

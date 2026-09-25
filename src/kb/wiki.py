@@ -149,6 +149,7 @@ class KnowledgeBase:
             "fix_checklist": analysis.get("fix_checklist", []),
             "files": analysis.get("files", []),
             "confidence": analysis.get("confidence", "low"),
+            "verification_checks": analysis.get("verification_checks", []),
             "parse_error": bool(analysis.get("parse_error")),
         }
         (self.raw_dir / f"{run_id}.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -165,6 +166,20 @@ class KnowledgeBase:
 
     def load_feedback(self, run_id: str) -> Optional[dict]:
         path = self.raw_dir / f"{run_id}.feedback.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+    def record_verification(self, run_id: str, result: dict) -> None:
+        """Stores the outcome of re-checking the page after a fix. Evidence for the user and
+        for ingest, not a verdict: only 👍/👎 reach MISTAKES.md and the wiki."""
+        self.load_run(run_id)
+        record = {"run_id": run_id, "created_at": datetime.now().isoformat(timespec="seconds"), **result}
+        (self.raw_dir / f"{run_id}.verification.json").write_text(
+            json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+        passed = sum(1 for r in result.get("results", []) if r.get("ok"))
+        self._log(f"browser check of run {run_id}: {passed}/{len(result.get('results', []))} passed")
+
+    def load_verification(self, run_id: str) -> Optional[dict]:
+        path = self.raw_dir / f"{run_id}.verification.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
     def record_feedback(self, run_id: str, worked: bool, note: str = "") -> bool:
@@ -240,6 +255,7 @@ class KnowledgeBase:
         feedback = self.load_feedback(run_id)
         if feedback is None:
             raise ValueError(f"run {run_id} has no verdict yet; only verified runs are ingested")
+        verification = self.load_verification(run_id)
         self._ensure()
 
         graph = load_graph(self.graph_path)
@@ -274,6 +290,9 @@ class KnowledgeBase:
         <verdict>
         {json.dumps(feedback, indent=2, ensure_ascii=False)}
         </verdict>
+        <browser_check>
+        {json.dumps(verification, indent=2, ensure_ascii=False) if verification else "(the fix was not re-checked in the browser)"}
+        </browser_check>
 
         Task: update the wiki with what this run teaches. Rewrite affected pages in full, create
         pages only for topics that have none (an issue page for the root cause, a component page
