@@ -252,6 +252,20 @@ Models: the backend agent runs on `openai/gpt-5.4` with 6 tool turns (`agents.ya
 part of frontend fix plans; everything else on `google/gemini-2.5-flash`. With `gemini-2.5-flash` and 4 turns the
 backend agent stopped at `api/db.py` and blamed list slicing, which is why it got the stronger model.
 
+**Backend model comparison** (same orders bug, backend agent only, 6 tool turns; one run each, so treat it as a
+first signal, not a benchmark; cost as reported by OpenRouter):
+
+| Model | Real cause found | Calls | Cost | Time |
+|---|---|---|---|---|
+| `openai/gpt-5.4` (current) | ✅ | 4 | $0.0274 | 13.0s |
+| `openai/gpt-5.4-mini` | ✅ | 5 | $0.0083 | 10.6s |
+| `deepseek/deepseek-v4-pro` | ✅ | 4 | $0.0105 | 31.0s |
+| `~deepseek/deepseek-pro-latest` | ✅ | 7 | $0.0171 | 20.3s |
+| `~deepseek/deepseek-v4-flash-latest` | ✅ | 6 | $0.0023 | 135.2s |
+| `google/gemini-2.5-flash` | ❌ blamed list slicing | 4 | $0.0029 | 13.3s |
+
+The workflow re-runs this comparison on every backend change (`SMOKE_COMPARE_BACKEND_MODELS`).
+
 It fails on errors (HTTP, crashes, unparseable answers), not on an unexpected route - that's what it reports.
 
 ---

@@ -17,6 +17,7 @@ Usage: OPENROUTER_API_KEY=... python scripts/smoke_test.py
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
 import textwrap
@@ -208,10 +209,12 @@ async def run_scenarios() -> tuple[list[dict], bool]:
 
 def found_backend_cause(root_cause: str) -> bool:
     """The orders bug: legacy orders have a numeric customer_id, customers are keyed by "c-N",
-    so the lookup raises KeyError. Credit an answer that names the KeyError or the id type mismatch."""
+    so the lookup raises KeyError. Credit an answer that names the KeyError, the seed data, or
+    the id type mismatch - whole words only ("int" must not match "point" or "print")."""
     text = (root_cause or "").lower()
-    mismatch = "customer_id" in text and any(w in text for w in ("int", "numeric", "number", "legacy", "seed"))
-    return "keyerror" in text or mismatch
+    if "keyerror" in text or "seed" in text:
+        return True
+    return "customer_id" in text and re.search(r"\b(int|integer|integers|numeric|legacy)\b", text) is not None
 
 
 async def compare_backend_models(models: list[str]) -> list[dict]:
