@@ -176,7 +176,10 @@ class UniversalAgent:
             servers.append((REPO_SERVER, {"MCP_REPO_ROOT": str(repo_root)}))
             instructions.append(
                 "Use list_files/read_file/search_code to find the actual source files involved - do not guess "
-                "file or component names without checking. Prefer search_code over reading whole files."
+                "file or component names without checking. Prefer search_code over reading whole files. Error "
+                "texts and URLs rarely appear verbatim in the code: when a search finds nothing, search for a "
+                "shorter term (e.g. the resource name in a failing URL, like 'orders' for /api/orders) or use "
+                "list_files, and read the handler before concluding."
             )
         elif use("repo"):
             instructions.append(
