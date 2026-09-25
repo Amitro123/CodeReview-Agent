@@ -209,7 +209,7 @@ To give Claude Code or Cursor the same knowledge, register the KB server in the 
 | Fix plan, verification, routing, graph | 0 |
 | Learning from a 👍/👎 | 1, in the background |
 
-In the smoke test below, a whole analysis took 2-4 model calls and 5-9 seconds. Repeats are served from the cache
+In the smoke test below, a whole analysis took 3-5 model calls and 5-13 seconds. Repeats are served from the cache
 in `~/.codereview-agent/cache` (`LLM_CACHE_TTL_HOURS=0` disables it).
 
 ---
@@ -242,11 +242,14 @@ pytest tests/           # 53 tests, no network: scripted models, mocked Jev and 
 repository secret. Three bugs in a generated fixture project go through the whole flow; the results land in the
 run's summary. Latest run:
 
-| Scenario | Routed to | Method | Calls | Time | Found |
+| Scenario | Routed to | Method | Calls | Time | Real cause found? |
 |---|---|---|---|---|---|
-| Pay button does nothing | ✅ frontend 100% | Jev | 4 | 8.8s | `handlePay` vs `handlePayment` in `static/checkout.js` |
-| Orders page 2 returns 500 | ✅ backend 100% | Jev | 2 | 4.9s | the failing endpoint (the handler itself: see the next run) |
-| Azure DevOps unit tests fail | ✅ ci | CI page | 3 | 4.5s | discount applied twice in `shop/totals.py` |
+| Pay button does nothing | ✅ frontend 100% | Jev | 3 | 6.4s | ✅ `handlePay` vs `handlePayment` in `static/checkout.js` |
+| Orders page 2 returns 500 | ✅ backend 100% | Jev | 5 | 12.6s | ❌ read `api/orders.py` and `api/db.py`, used its 4 tool turns before `api/seed.py` (legacy orders with numeric `customer_id` → `KeyError`) and blamed list slicing |
+| Azure DevOps unit tests fail | ✅ ci | CI page | 3 | 5.1s | ✅ discount applied twice in `shop/totals.py` |
+
+All with `google/gemini-2.5-flash` for every agent. The backend miss is the known gap: more tool turns or a
+stronger `backend` model in `agents.yaml` are the levers.
 
 It fails on errors (HTTP, crashes, unparseable answers), not on an unexpected route - that's what it reports.
 
