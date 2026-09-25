@@ -167,8 +167,10 @@ A problem is sensitive when any of these holds (`src/router/sensitivity.py`), ch
    ```
 2. **Pattern** (no LLM): the evidence holds API keys, bearer tokens, JWTs, `PASSWORD=`/`SECRET=` values, email
    addresses or card numbers (Luhn-checked). These are **redacted** before the classifier sees the evidence.
-3. **Jev**: the classifier's `sensitive_data` probability reaches `threshold` (payments, customer or health data,
-   credentials, confidential logic).
+3. **Jev**: the classifier's `sensitive_data` probability reaches `threshold` - whether the evidence itself holds
+   real personal data, credentials, card/bank numbers or health records that the patterns missed. It's about values,
+   not topics: a bug on a checkout or customers page isn't sensitive by itself (asked that way, Jev flagged 72-89% of
+   ordinary bugs); list a project that's sensitive as a whole under `projects`.
 
 A sensitive run uses each agent's `sensitive_model` and sends OpenRouter `provider.data_collection: "deny"`, so it's
 only routed to providers that don't store or train on prompts. The side panel shows it
