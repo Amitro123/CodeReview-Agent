@@ -264,7 +264,8 @@ first signal, not a benchmark; cost as reported by OpenRouter):
 | `~deepseek/deepseek-v4-flash-latest` | ✅ | 6 | $0.0023 | 135.2s |
 | `google/gemini-2.5-flash` | ❌ blamed list slicing | 4 | $0.0029 | 13.3s |
 
-The workflow re-runs this comparison on every backend change (`SMOKE_COMPARE_BACKEND_MODELS`).
+Re-run it from Actions → *Smoke test (real models)* → **Run workflow** (manual runs only, so PR pushes
+don't pay for it; about $0.07 per run). All of the testing above cost $0.29 on OpenRouter.
 
 It fails on errors (HTTP, crashes, unparseable answers), not on an unexpected route - that's what it reports.
 
