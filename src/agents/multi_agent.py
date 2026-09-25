@@ -131,7 +131,7 @@ class MultiAgentAnalyzer:
         run_id = kb.record_run("ci", query or pipeline or "CI failure", result, page_url=page_url,
                                error_signature=ci_signature(ci, ci_log), route=route)
         analysis_files = self._save_mds(fe, be, solution, repo)
-        return {"solution": solution, "files": analysis_files, "run_id": run_id}
+        return {"solution": solution, "files": analysis_files, "run_id": run_id, "analysis": result}
 
     @staticmethod
     def _render_solution(result: dict) -> str:

@@ -14,7 +14,8 @@ from src.config import settings
 from src.kb.cache import ResponseCache
 from src.kb.wiki import KnowledgeBase
 from src.router.classifier import CATEGORIES, Classification, Classifier
-from src.router.policy import FOCUS, Route, RoutingConfig, decide, load_config
+from src.config import resolve_local_repo
+from src.router.policy import FOCUS, AgentProfile, Route, RoutingConfig, decide, escalation_reason, load_config
 from src.router.sensitivity import find_sensitive, project_is_sensitive, redact
 from src.router.signals import build_state, detect_source, error_text
 
@@ -94,17 +95,26 @@ class RoutedAnalysis:
                   "sensitive": sensitive, "sensitive_reason": route.sensitive_reason}
         focus = "; ".join(FOCUS[x] for x in route.categories)
         agents = self.config.agents
+        repo_mapped = resolve_local_repo(repo, page_url) is not None
 
         if "ci" in route.categories:
             profile = agents["ci"]
+            ci_log = request.get("ci_log") or (request.get("ci") or {}).get("log") or ""
+
+            async def run_ci(model: str, run_record: dict) -> dict:
+                return await self.ci_agent.analyze_ci_failure(
+                    ci_log, repo, ci=request.get("ci"), query=query, page_url=page_url, model=model,
+                    tools=set(profile.tools), max_turns=profile.max_turns,
+                    focus=focus if len(route.categories) > 1 else "", route=run_record,
+                )
             await status("CI agent: reading the failed steps...")
-            result = await self.ci_agent.analyze_ci_failure(
-                request.get("ci_log") or (request.get("ci") or {}).get("log") or "", repo, ci=request.get("ci"), query=query, page_url=page_url,
-                model=profile.model_id(sensitive), tools=set(profile.tools), max_turns=profile.max_turns,
-                focus=focus if len(route.categories) > 1 else "", route=record,
-            )
+            model = profile.model_id(sensitive)
+            result = await run_ci(model, record)
+            escalation = await self._escalation(profile, model, result["analysis"], repo_mapped, "CI", status)
+            if escalation:
+                result = await run_ci(escalation["to"], {**record, "escalation": escalation})
             return {"plan": result["solution"], "run_id": result["run_id"], "files": list(result["files"].values()),
-                    "repo": repo, "page_url": page_url}
+                    "repo": repo, "page_url": page_url, "escalation": escalation}
 
         screenshot = request.get("screenshot")
         ui_analysis: dict = {}
@@ -125,17 +135,39 @@ class RoutedAnalysis:
         # needs the code, so frontend-only routes use the backend agent's code access.
         lead = route.categories[-1]
         profile = agents["backend"] if lead == "frontend" else agents[lead]
+
+        async def run_code(model: str) -> dict:
+            return await self.agent.code_agent(
+                repo, ui_analysis, dom.get("selectedElement") or {}, query=query, page_url=page_url,
+                browser_tool=browser_tool, network_errors=network_errors, console_errors=console_errors,
+                model=model, tools=set(profile.tools), max_turns=profile.max_turns, focus=focus,
+            )
         await status(f"{LABELS[lead]} agent: reviewing the code...")
-        code_analysis = await self.agent.code_agent(
-            repo, ui_analysis, dom.get("selectedElement") or {}, query=query, page_url=page_url,
-            browser_tool=browser_tool, network_errors=network_errors, console_errors=console_errors,
-            model=profile.model_id(sensitive), tools=set(profile.tools), max_turns=profile.max_turns, focus=focus,
-        )
+        model = profile.model_id(sensitive)
+        code_analysis = await run_code(model)
+        escalation = await self._escalation(profile, model, code_analysis, repo_mapped, LABELS[lead], status)
+        if escalation:
+            code_analysis = await run_code(escalation["to"])
+            record["escalation"] = escalation
         plan = await self.agent.integrator(ui_analysis, code_analysis)
         run_id = self.agent.record_run(query, repo, page_url, code_analysis, network_errors, console_errors,
                                        route=record)
         md_path = self.agent.save_universal_mds(plan, query, repo, network_errors, console_errors, screenshot)
-        return {"plan": plan, "run_id": run_id, "files": [md_path], "repo": repo, "page_url": page_url}
+        return {"plan": plan, "run_id": run_id, "files": [md_path], "repo": repo, "page_url": page_url,
+                "escalation": escalation}
+
+    @staticmethod
+    async def _escalation(profile: AgentProfile, model: str, analysis: dict, repo_mapped: bool, label: str,
+                          status: StatusCallback) -> Optional[dict]:
+        """One re-run on the agent's fallback_model when the answer isn't good enough (see
+        policy.escalation_reason). None when it is, or when there's no stronger model to use."""
+        reason = escalation_reason(analysis, repo_mapped)
+        fallback = profile.fallback_model
+        if not reason or not fallback or fallback == model:
+            return None
+        print(f"DEBUG: escalating {label} agent from {model} to {fallback}: {reason}", flush=True)
+        await status(f"{label} agent: {reason} - retrying with {fallback}...")
+        return {"from": model, "to": fallback, "reason": reason}
 
 
 def route_message(c: Classification, route: Route) -> dict:

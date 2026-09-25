@@ -33,6 +33,7 @@ class AgentProfile:
     max_turns: int = 4
     description: str = ""
     sensitive_model: str = ""    # used instead of `model` when the problem is sensitive
+    fallback_model: str = ""     # one re-run on this model when the answer isn't good enough
 
     def model_id(self, sensitive: bool = False) -> str:
         """Role aliases resolve to the configured models; anything else is a model id."""
@@ -77,7 +78,8 @@ def load_config(path: Optional[Path] = None) -> RoutingConfig:
         agents[name] = AgentProfile(name, str(spec.get("model", agents[name].model)), tools,
                                     int(spec.get("max_turns", agents[name].max_turns)),
                                     str(spec.get("description", "")),
-                                    str(spec.get("sensitive_model", agents[name].sensitive_model) or ""))
+                                    str(spec.get("sensitive_model", agents[name].sensitive_model) or ""),
+                                    str(spec.get("fallback_model", agents[name].fallback_model) or ""))
     routing = raw.get("routing") or {}
     sensitivity = raw.get("sensitivity") or {}
     return RoutingConfig(agents, float(routing.get("single_agent_threshold", 0.85)),
@@ -109,3 +111,17 @@ def decide(c: Classification, config: RoutingConfig) -> Route:
         pair = [second, first] if second == "frontend" else [first, second]
         return Route(pair, False, f"{first} {p1:.0%} / {second} {p2:.0%}: running both")
     return Route([], True, f"not sure: {first} {p1:.0%}, {second} {p2:.0%}")
+
+
+def escalation_reason(analysis: dict, repo_mapped: bool) -> str:
+    """Why an agent's answer isn't good enough to show, or "" when it is. Deterministic - no
+    LLM judges the answer: no usable answer, the agent's own low confidence, or a mapped repo
+    whose code it never cited."""
+    if analysis.get("parse_error"):
+        return "no usable answer"
+    if str(analysis.get("confidence", "")).lower() == "low":
+        return "low confidence"
+    if repo_mapped and not analysis.get("files"):
+        return "no code files cited"
+    return ""
+

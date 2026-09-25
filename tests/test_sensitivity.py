@@ -56,7 +56,7 @@ def test_non_sensitive_problem_runs_on_the_regular_model(tmp_path, monkeypatch):
     jev = FakeJev(jev_reply(BACKEND))
     c, route, _, client = _run(tmp_path, monkeypatch, page_request(), jev)
     assert not route.sensitive
-    assert client.requests[0]["model"] == "deepseek/deepseek-v4-pro"
+    assert client.requests[0]["model"] == "openai/gpt-5.4-mini"
     assert "data_collection" not in client.requests[0]["extra_body"].get("provider", {})
 
 

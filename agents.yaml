@@ -4,6 +4,8 @@
 # model: "vision" / "code" / "text" use VISION_MODEL / CODE_MODEL / TEXT_MODEL from .env;
 #        anything else is a model id on your provider, e.g. "anthropic/claude-sonnet-4.5".
 # sensitive_model: used instead of `model` when the problem is sensitive (see `sensitivity`).
+# fallback_model: one re-run on this model when the answer isn't good enough - no usable answer,
+#        the agent's own low confidence, or a mapped repo whose code it didn't cite.
 # tools: browser      inspect_element on the live page, through the extension
 #        page_errors  the page's console and failed-network errors
 #        repo         list_files / read_file / search_code on the mapped checkout (MCP)
@@ -35,21 +37,24 @@ agents:
     max_turns: 2
   backend:
     description: Reads the server code for the failing API, logic or data.
-    # Tracing bad data through handler -> data access -> seed data takes more steps and a stronger
-    # model than gemini-2.5-flash; see the model comparison in the README.
-    model: deepseek/deepseek-v4-pro
+    # gemini-2.5-flash couldn't trace bad data from the handler into the seed data; gpt-5.4-mini
+    # did, fastest and cheapest of the models that did - see the model comparison in the README.
+    model: openai/gpt-5.4-mini
     sensitive_model: openai/gpt-5.4
+    fallback_model: openai/gpt-5.4
     tools: [repo, kb, page_errors, browser]
     max_turns: 6
   ci:
     description: Reads the failing pipeline steps and logs, then the code they point at.
-    model: deepseek/deepseek-v4-pro
+    model: openai/gpt-5.4-mini
     sensitive_model: openai/gpt-5.4
+    fallback_model: openai/gpt-5.4
     tools: [repo, kb]
     max_turns: 4
   config_env:
     description: Checks configuration, env vars, permissions and dependency versions.
-    model: deepseek/deepseek-v4-pro
+    model: openai/gpt-5.4-mini
     sensitive_model: openai/gpt-5.4
+    fallback_model: openai/gpt-5.4
     tools: [repo, kb, page_errors]
     max_turns: 3

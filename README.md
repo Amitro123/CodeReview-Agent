@@ -20,8 +20,10 @@
   ("Routed to: Backend 92%") and lets you re-run with another agent. See [Routing](#-routing).
 - 🔒 **Sensitive data stays on the trusted model**: problems from projects you mark sensitive, or whose evidence
   holds secrets or personal data, or that Jev flags, run on `openai/gpt-5.4` with no-data-collection providers; the
-  rest run on the cheaper `deepseek/deepseek-v4-pro`. Secrets are redacted before classification. See
+  rest run on the cheaper, faster `openai/gpt-5.4-mini`. Secrets are redacted before classification. See
   [Sensitive data](#-sensitive-data).
+- 🪜 **Escalates when unsure**: if an agent's answer is unusable, low-confidence, or never cites your code, it's re-run
+  once on the stronger `openai/gpt-5.4` - decided by rules, not by another model call.
 - 📸 **Sees what you see**: screenshots are captured natively from your logged-in tab
   (`chrome.tabs.captureVisibleTab`) and analyzed by a vision model - only when the problem is visual.
 - 🔎 **Live page inspection**: agents call `inspect_element` on your open tab through the extension (computed
@@ -94,8 +96,8 @@ That one key covers the agents' models **and** the Jev classifier. See [Configur
 
 1. Go to `chrome://extensions/` and enable **Developer mode**.
 2. Click **Load unpacked** and select the `extension/` folder.
-3. Open the side panel from the toolbar icon. The backend URL defaults to `ws://localhost:8000`
-   (the Perplexity key in settings is optional - only the legacy URL/log review endpoints use it).
+3. Open the side panel from the toolbar icon. The backend URL defaults to `ws://localhost:8000`; the model keys
+   live in the backend's `.env`, not in the extension.
 
 ### 3. Use it
 
@@ -141,12 +143,17 @@ problem ──> signals ──────> classifier ────────�
 
 Each agent's model, sensitive model, tools and turn cap live in [`agents.yaml`](agents.yaml):
 
-| Agent | Model | When sensitive | Tools | Max turns |
-|---|---|---|---|---|
-| frontend | `vision` (= `VISION_MODEL`, Gemini 2.5 Flash) | `openai/gpt-5.4` | browser, page_errors | 2 |
-| backend | `deepseek/deepseek-v4-pro` | `openai/gpt-5.4` | repo, kb, page_errors, browser | 6 |
-| ci | `deepseek/deepseek-v4-pro` | `openai/gpt-5.4` | repo, kb | 4 |
-| config_env | `deepseek/deepseek-v4-pro` | `openai/gpt-5.4` | repo, kb, page_errors | 3 |
+| Agent | Model | When sensitive | Fallback | Tools | Max turns |
+|---|---|---|---|---|---|
+| frontend | `vision` (= `VISION_MODEL`, Gemini 2.5 Flash) | `openai/gpt-5.4` | - | browser, page_errors | 2 |
+| backend | `openai/gpt-5.4-mini` | `openai/gpt-5.4` | `openai/gpt-5.4` | repo, kb, page_errors, browser | 6 |
+| ci | `openai/gpt-5.4-mini` | `openai/gpt-5.4` | `openai/gpt-5.4` | repo, kb | 4 |
+| config_env | `openai/gpt-5.4-mini` | `openai/gpt-5.4` | `openai/gpt-5.4` | repo, kb, page_errors | 3 |
+
+**Fallback** (`src/router/policy.py: escalation_reason`): an agent's answer is re-run once on its `fallback_model`
+when it has no usable answer (an error or no JSON), the agent reports `confidence: low`, or the repo is mapped but
+the answer cites no code file. No model judges the answer, and there's no second retry. The side panel shows
+"↑ Retried on openai/gpt-5.4 (low confidence)" and the run records it.
 
 The code part of a frontend fix plan is written with the backend agent's model and tools. `model` takes a role
 alias (`vision` / `code` / `text`, from `.env`) or any model id on your provider.
@@ -267,14 +274,14 @@ in `~/.codereview-agent/cache` (`LLM_CACHE_TTL_HOURS=0` disables it).
 ## 🧪 Testing
 
 ```bash
-pytest tests/           # 62 tests, no network: scripted models, mocked Jev and MCP over stdio
+pytest tests/           # 61 tests, no network: scripted models, mocked Jev and MCP over stdio
 ```
 
 **Smoke test on real models** - [`scripts/smoke_test.py`](scripts/smoke_test.py), run by the
 *Smoke test (real models)* workflow on PRs that touch the backend and on demand, with the `OPENROUTER_API_KEY`
 repository secret. Bugs in a generated fixture project go through the whole flow - a frontend one, a backend one
 (also a second time with a customer email in the error, which must come out 🔒 sensitive) and a failed Azure DevOps
-run; the results land in the run's summary. Latest run:
+run; the results land in the run's summary. Run with DeepSeek V4 Pro as the regular model (now GPT-5.4 Mini):
 
 | Scenario | Routed to | Sensitive | Model | Calls | Time | Real cause found? |
 |---|---|---|---|---|---|---|
@@ -285,8 +292,8 @@ run; the results land in the run's summary. Latest run:
 
 The frontend row's model is the one that wrote the code part of the plan (the page itself was read with
 `VISION_MODEL`). DeepSeek V4 Pro found every cause but was the slowest model tested (up to ~2.5 minutes for the
-backend bug, which it solved in 31s in the comparison below); `openai/gpt-5.4-mini` is the fast alternative at a
-similar price. An earlier wording of Jev's sensitivity question asked about sensitive *topics* and flagged these
+backend bug, which it solved in 31s in the comparison below), so the regular model is now `openai/gpt-5.4-mini`:
+it found the cause in the comparison, fastest, at a similar price. An earlier wording of Jev's sensitivity question asked about sensitive *topics* and flagged these
 ordinary bugs at 72-89%; asked about sensitive *values*, it gives 3-8% and the email is caught by the patterns.
 
 With `gemini-2.5-flash` and 4 turns the backend agent stopped at `api/db.py` and blamed list slicing, which is why
@@ -297,9 +304,9 @@ first signal, not a benchmark; cost as reported by OpenRouter):
 
 | Model | Real cause found | Calls | Cost | Time |
 |---|---|---|---|---|
-| `openai/gpt-5.4` (sensitive runs) | ✅ | 4 | $0.0274 | 13.0s |
-| `openai/gpt-5.4-mini` | ✅ | 5 | $0.0083 | 10.6s |
-| `deepseek/deepseek-v4-pro` (default) | ✅ | 4 | $0.0105 | 31.0s |
+| `openai/gpt-5.4` (sensitive runs, fallback) | ✅ | 4 | $0.0274 | 13.0s |
+| `openai/gpt-5.4-mini` (regular) | ✅ | 5 | $0.0083 | 10.6s |
+| `deepseek/deepseek-v4-pro` | ✅ | 4 | $0.0105 | 31.0s |
 | `~deepseek/deepseek-pro-latest` | ✅ | 7 | $0.0171 | 20.3s |
 | `~deepseek/deepseek-v4-flash-latest` | ✅ | 6 | $0.0023 | 135.2s |
 | `google/gemini-2.5-flash` | ❌ blamed list slicing | 4 | $0.0029 | 13.3s |
@@ -345,13 +352,6 @@ This project is managed by the **Project Rules Generator (PRG)**, featuring an a
 - ♻️ **`refactor-module`**: Structural cleanup following the factory pattern.
 - 🧪 **`test-coverage`**: Automated pytest execution with coverage reporting.
 - 🛡️ **`fastapi-security`**: Auditing authentication and dependency injection.
-
----
-
-## 🏗 Architecture Details
-
-[ARCHITECTURE.md](ARCHITECTURE.md) describes the original Perplexity-based endpoints (`/analyze`, `/ci-analyze`,
-`analyze_url` / `analyze_logs`), which are still available. The routed agent flow above is the main path.
 
 ---
 *Built with ❤️ by Antigravity & Amit Production Engineering.*
